@@ -1,0 +1,13 @@
+# Local credentials and configuration
+key
+.env
+.env.*
+secrets/
+
+# Packet captures and raw authentication material
+*.pcap
+*.pcapng
+captures/
+
+# Local agent work records
+.planning/
