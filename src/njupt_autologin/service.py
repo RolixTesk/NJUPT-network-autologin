@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import os
+import pwd
+import re
 import shutil
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 from .credentials import default_path, load_credentials
@@ -14,6 +18,59 @@ class ServiceError(RuntimeError):
     pass
 
 
+SERVICE_NAME = "njupt-autologin.service"
+TIMER_NAME = "njupt-autologin.timer"
+
+
+@dataclass(frozen=True)
+class ServiceStatus:
+    installed: bool
+    enabled: bool
+    active: bool
+    linger: bool
+
+
+def _run(command: list[str], *, check: bool = True, timeout: int = 15) -> subprocess.CompletedProcess[str]:
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ServiceError(f"cannot run {command[0]}") from exc
+    if check and result.returncode:
+        raise ServiceError(f"{command[0]} failed ({result.returncode})")
+    return result
+
+
+def _unit_dir() -> Path:
+    return Path.home() / ".config" / "systemd" / "user"
+
+
+def _linger_enabled() -> bool:
+    username = pwd.getpwuid(os.getuid()).pw_name
+    result = _run(["loginctl", "show-user", username, "-p", "Linger", "--value"], check=False)
+    return result.returncode == 0 and result.stdout.strip().lower() == "yes"
+
+
+def enable_linger() -> None:
+    """Enable the user manager at boot, using the desktop privilege prompt if needed."""
+    if _linger_enabled():
+        return
+    username = pwd.getpwuid(os.getuid()).pw_name
+    helper = shutil.which("pkexec")
+    if not helper:
+        raise ServiceError("pkexec is required to enable startup before login")
+    _run([helper, "loginctl", "enable-linger", username], timeout=120)
+    if not _linger_enabled():
+        raise ServiceError("loginctl did not enable startup before login")
+
+
+def service_status() -> ServiceStatus:
+    unit_dir = _unit_dir()
+    installed = (unit_dir / SERVICE_NAME).is_file() and (unit_dir / TIMER_NAME).is_file()
+    enabled = _run(["systemctl", "--user", "is-enabled", TIMER_NAME], check=False).returncode == 0
+    active = _run(["systemctl", "--user", "is-active", TIMER_NAME], check=False).returncode == 0
+    return ServiceStatus(installed, enabled, active, _linger_enabled())
+
+
 def _quote(value: str) -> str:
     return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
@@ -21,6 +78,8 @@ def _quote(value: str) -> str:
 def install_service(interface: str, credential_path: Path | None = None) -> tuple[Path, Path]:
     if sys.platform != "linux":
         raise ServiceError("systemd installation is supported only on Linux")
+    if not re.fullmatch(r"[A-Za-z0-9_.:-]+", interface):
+        raise ServiceError("invalid interface name")
     credential = (credential_path or default_path()).expanduser().resolve()
     load_credentials(path=credential)  # Verify the secret file and its permissions.
     home = Path.home()
@@ -32,10 +91,10 @@ def install_service(interface: str, credential_path: Path | None = None) -> tupl
         package_source, package_target, dirs_exist_ok=True,
         ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
     )
-    unit_dir = home / ".config" / "systemd" / "user"
+    unit_dir = _unit_dir()
     unit_dir.mkdir(parents=True, exist_ok=True)
-    service = unit_dir / "njupt-autologin.service"
-    timer = unit_dir / "njupt-autologin.timer"
+    service = unit_dir / SERVICE_NAME
+    timer = unit_dir / TIMER_NAME
     service.write_text(
         "[Unit]\n"
         "Description=NJUPT wired network login\n"
@@ -64,7 +123,28 @@ def install_service(interface: str, credential_path: Path | None = None) -> tupl
         ["systemctl", "--user", "daemon-reload"],
         ["systemctl", "--user", "enable", "--now", timer.name],
     ):
-        result = subprocess.run(command, capture_output=True, text=True, timeout=15)
-        if result.returncode:
-            raise ServiceError(f"systemctl --user failed ({result.returncode})")
+        _run(command)
     return service, timer
+
+
+def uninstall_service(*, remove_credentials: bool = False) -> None:
+    if sys.platform != "linux":
+        raise ServiceError("systemd installation is supported only on Linux")
+    unit_dir = _unit_dir()
+    units_present = any((unit_dir / name).is_file() for name in (SERVICE_NAME, TIMER_NAME))
+    _run(["systemctl", "--user", "disable", "--now", TIMER_NAME], check=units_present)
+    for unit in (unit_dir / SERVICE_NAME, unit_dir / TIMER_NAME):
+        try:
+            unit.unlink()
+        except FileNotFoundError:
+            pass
+    _run(["systemctl", "--user", "daemon-reload"])
+    _run(["systemctl", "--user", "reset-failed", SERVICE_NAME], check=False)
+    app_root = Path.home() / ".local" / "share" / "njupt-autologin"
+    if app_root.is_dir():
+        shutil.rmtree(app_root)
+    if remove_credentials:
+        try:
+            default_path().unlink()
+        except FileNotFoundError:
+            pass

@@ -46,6 +46,28 @@ systemctl --user show njupt-autologin.service -p Result -p ExecMainStatus
 journalctl --user -u njupt-autologin.service -n 20 --no-pager
 ```
 
+## 图形界面
+
+Ubuntu 安装 Tkinter 后可启动简易设置界面：
+
+```bash
+sudo apt install python3-tk policykit-1
+njupt-autologin-gui
+```
+
+若用户级脚本目录尚未进入当前会话的 `PATH`，可直接运行 `~/.local/bin/njupt-autologin-gui`，或重新登录桌面后再启动。
+
+界面支持输入校园网账号和密码、选择运营商和网卡、保存登录信息、安装并启用开机自启服务、查看服务状态以及卸载服务。密码输入框会遮蔽内容；已保存凭据存在时，密码留空表示沿用原密码。
+
+“安装并启用开机自启”会同时检查 linger。若尚未启用，界面通过系统的 `pkexec` 权限对话框执行 `loginctl enable-linger`。卸载默认保留登录信息；只有勾选“卸载时同时删除保存的登录信息”才会删除凭据。卸载不会关闭 linger，因为当前用户的其他服务也可能依赖它。
+
+命令行也可以卸载服务：
+
+```bash
+njupt-autologin uninstall-service
+njupt-autologin uninstall-service --remove-credentials
+```
+
 ## 状态与边界
 
 `status` 以退出码 `0` 表示联网、`2` 表示 Portal、`3` 表示网络不可用；`login` 成功或已联网返回 `0`，认证失败返回 `4`，配置错误返回 `5`。加 `--json` 可输出状态对象。Portal 的配置或字段变更会使程序拒绝尝试登录，需重新分析网页协议。当前 Portal 的页面自身注销请求返回失败，因此没有提供注销命令。

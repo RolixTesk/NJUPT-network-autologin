@@ -10,7 +10,7 @@ from pathlib import Path
 
 from .client import AuthenticationError, CampusClient, NetworkError, PortalError
 from .credentials import CredentialError, Credentials, load_credentials, save_credentials
-from .service import ServiceError, install_service
+from .service import ServiceError, install_service, uninstall_service
 
 
 EXIT_PORTAL = 2
@@ -37,6 +37,8 @@ def _parser() -> argparse.ArgumentParser:
     configure.add_argument("--output", type=Path, help="destination credential file")
     service = commands.add_parser("install-service", help="install and enable the user systemd timer")
     service.add_argument("--credentials-file", type=Path, help="private credential file to use")
+    remove = commands.add_parser("uninstall-service", help="disable and remove the user systemd timer")
+    remove.add_argument("--remove-credentials", action="store_true", help="also delete saved credentials")
     return parser
 
 
@@ -53,6 +55,7 @@ def _emit(as_json: bool, state: str, **extra: object) -> None:
             "login_success": "Login successful; Internet OK",
             "configured": "Credentials saved",
             "service_installed": "User service and timer installed",
+            "service_uninstalled": "User service and timer removed",
         }
         print(labels.get(state, state))
 
@@ -77,6 +80,10 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "install-service":
             service, timer = install_service(args.interface, args.credentials_file)
             _emit(args.json, "service_installed", service=str(service), timer=str(timer))
+            return 0
+        if args.command == "uninstall-service":
+            uninstall_service(remove_credentials=args.remove_credentials)
+            _emit(args.json, "service_uninstalled")
             return 0
         client = CampusClient(interface=args.interface, timeout=args.timeout)
         if args.command == "status":
