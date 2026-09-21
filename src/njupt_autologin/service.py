@@ -75,7 +75,7 @@ def _quote(value: str) -> str:
     return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
-def install_service(interface: str, credential_path: Path | None = None) -> tuple[Path, Path]:
+def install_service(interface: str = "auto", credential_path: Path | None = None) -> tuple[Path, Path]:
     if sys.platform != "linux":
         raise ServiceError("systemd installation is supported only on Linux")
     if not re.fullmatch(r"[A-Za-z0-9_.:-]+", interface):

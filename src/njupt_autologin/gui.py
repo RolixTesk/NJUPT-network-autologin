@@ -49,7 +49,7 @@ class App:
         self.username = tk.StringVar()
         self.password = tk.StringVar()
         self.operator = tk.StringVar(value="中国移动")
-        self.interface = tk.StringVar(value="ens33")
+        self.interface = tk.StringVar(value="auto")
         self.remove_credentials = tk.BooleanVar(value=False)
         self.status_text = tk.StringVar(value="正在读取服务状态…")
         self.buttons: list[ttk.Button] = []
@@ -75,7 +75,7 @@ class App:
         ttk.Entry(frame, textvariable=self.interface, width=32).grid(row=4, column=1, sticky="ew", pady=5)
         ttk.Label(
             frame,
-            text="密码留空时沿用已保存的密码。凭据保存在当前用户的私有配置目录。",
+            text="接口填 auto 可自动选择。密码留空时沿用已保存的密码。凭据保存在当前用户的私有配置目录。",
             foreground="#555555",
             wraplength=390,
         ).grid(row=5, column=0, columnspan=2, sticky="w", pady=(6, 14))

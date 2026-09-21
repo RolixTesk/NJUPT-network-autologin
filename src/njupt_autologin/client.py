@@ -19,6 +19,7 @@ from .credentials import Credentials
 
 
 PORTAL_HOST = "p.njupt.edu.cn"
+PORTAL_IP = "10.10.244.11"
 CONNECTIVITY_HOST = "connectivitycheck.gstatic.com"
 USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64; rv:150.0) Gecko/20100101 Firefox/150.0"
 JS_VERSION = "4.5"
@@ -53,15 +54,75 @@ class NetworkStatus:
 
 
 class CampusClient:
-    def __init__(self, interface: str = "ens33", timeout: float = 10.0) -> None:
-        if not re.fullmatch(r"[A-Za-z0-9_.:-]+", interface):
-            raise ValueError("invalid interface name")
+    def __init__(self, interface: str = "auto", timeout: float = 10.0) -> None:
         if not 0 < timeout <= 60:
             raise ValueError("timeout must be between 0 and 60 seconds")
+        if interface == "auto":
+            interface = self._detect_interface(timeout)
+        if not re.fullmatch(r"[A-Za-z0-9_.:-]+", interface):
+            raise ValueError("invalid interface name")
         self.interface = interface
         self.timeout = timeout
         self.local_ip = self._interface_ip(interface)
         self._require_route("1.1.1.1")
+
+    @staticmethod
+    def _default_interfaces() -> list[str]:
+        try:
+            result = subprocess.run(
+                ["ip", "-4", "-o", "route", "show", "default"],
+                check=True, capture_output=True, text=True, timeout=5,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise NetworkError("cannot inspect default routes") from exc
+        candidates: list[tuple[int, int, str]] = []
+        for order, line in enumerate(result.stdout.splitlines()):
+            device = re.search(r"\bdev (\S+)", line)
+            if not device or device.group(1) == "lo":
+                continue
+            metric = re.search(r"\bmetric (\d+)", line)
+            candidates.append((int(metric.group(1)) if metric else 0, order, device.group(1)))
+        interfaces: list[str] = []
+        for _metric, _order, interface in sorted(candidates):
+            if interface not in interfaces:
+                interfaces.append(interface)
+        if not interfaces:
+            raise NetworkError("no IPv4 default-route interface is available")
+        return interfaces
+
+    @classmethod
+    def _detect_interface(cls, timeout: float) -> str:
+        candidates = cls._default_interfaces()
+        if len(candidates) == 1:
+            return candidates[0]
+        scored: list[tuple[int, str]] = []
+        for interface in candidates:
+            try:
+                client = cls(interface=interface, timeout=min(timeout, 4.0))
+                status = client.probe(attempts=1)
+                if status.state == "portal_detected" and status.portal_host in (PORTAL_HOST, PORTAL_IP):
+                    score = 5
+                elif status.state == "portal_detected":
+                    score = 2
+                elif status.state == "internet_ok":
+                    try:
+                        client._status_data()
+                    except (NetworkError, PortalError):
+                        score = 1
+                    else:
+                        score = 4
+                else:
+                    score = 0
+                scored.append((score, interface))
+            except (NetworkError, PortalError):
+                scored.append((0, interface))
+        best = max(score for score, _interface in scored)
+        winners = [interface for score, interface in scored if score == best]
+        if best >= 4:
+            return winners[0]
+        if best > 0 and len(winners) == 1:
+            return winners[0]
+        raise NetworkError("cannot uniquely detect the campus interface; specify --interface")
 
     @staticmethod
     def _interface_ip(interface: str) -> str:
@@ -80,7 +141,7 @@ class CampusClient:
     def _require_route(self, destination: str) -> None:
         try:
             result = subprocess.run(
-                ["ip", "-4", "route", "get", destination],
+                ["ip", "-4", "route", "get", destination, "from", self.local_ip, "oif", self.interface],
                 check=True, capture_output=True, text=True, timeout=5,
             )
         except (OSError, subprocess.SubprocessError) as exc:
@@ -92,10 +153,11 @@ class CampusClient:
     def _request(self, host: str, port: int, path: str, *, secure: bool = True) -> Response:
         try:
             cls = http.client.HTTPSConnection if secure else http.client.HTTPConnection
-            options: dict[str, object] = {"timeout": self.timeout, "source_address": (self.local_ip, 0)}
+            options: dict[str, object] = {"timeout": self.timeout}
             if secure:
                 options["context"] = ssl.create_default_context()
             connection = cls(host, port, **options)
+            connection._create_connection = self._open_socket
             try:
                 connection.request("GET", path, headers={
                     "Accept": "*/*",
@@ -117,6 +179,34 @@ class CampusClient:
         except (OSError, TimeoutError, ssl.SSLError, http.client.HTTPException) as exc:
             # Exception messages can include a URL containing credentials.
             raise NetworkError(f"request failed ({type(exc).__name__})") from None
+
+    def _open_socket(
+        self,
+        address: tuple[str, int],
+        timeout: object = None,
+        source_address: tuple[str, int] | None = None,
+    ) -> socket.socket:
+        del timeout, source_address
+        last_error: OSError | None = None
+        for family, socktype, protocol, _canonname, sockaddr in socket.getaddrinfo(
+            address[0], address[1], socket.AF_INET, socket.SOCK_STREAM
+        ):
+            connection = socket.socket(family, socktype, protocol)
+            try:
+                connection.settimeout(self.timeout)
+                if hasattr(socket, "SO_BINDTODEVICE"):
+                    connection.setsockopt(
+                        socket.SOL_SOCKET, socket.SO_BINDTODEVICE, self.interface.encode() + b"\0"
+                    )
+                connection.bind((self.local_ip, 0))
+                connection.connect(sockaddr)
+                return connection
+            except OSError as exc:
+                last_error = exc
+                connection.close()
+        if last_error is not None:
+            raise last_error
+        raise OSError("no IPv4 address found for destination")
 
     def probe(self, attempts: int = 2) -> NetworkStatus:
         if not 1 <= attempts <= 3:

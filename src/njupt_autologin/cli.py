@@ -21,7 +21,7 @@ EXIT_CONFIG = 5
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="njupt-autologin")
-    parser.add_argument("--interface", default="ens33", help="campus network interface (default: ens33)")
+    parser.add_argument("--interface", default="auto", help="campus interface or auto (default: auto)")
     parser.add_argument("--timeout", type=float, default=10.0, help="seconds per network request")
     parser.add_argument("--json", action="store_true", help="emit machine-readable status")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -57,7 +57,10 @@ def _emit(as_json: bool, state: str, **extra: object) -> None:
             "service_installed": "User service and timer installed",
             "service_uninstalled": "User service and timer removed",
         }
-        print(labels.get(state, state))
+        message = labels.get(state, state)
+        if extra.get("interface"):
+            message += f" (interface: {extra['interface']})"
+        print(message)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -88,7 +91,10 @@ def main(argv: list[str] | None = None) -> int:
         client = CampusClient(interface=args.interface, timeout=args.timeout)
         if args.command == "status":
             status = client.probe()
-            _emit(args.json, status.state, http_status=status.http_status, portal_host=status.portal_host)
+            _emit(
+                args.json, status.state, interface=client.interface,
+                http_status=status.http_status, portal_host=status.portal_host,
+            )
             return {
                 "internet_ok": 0,
                 "portal_detected": EXIT_PORTAL,
@@ -98,14 +104,14 @@ def main(argv: list[str] | None = None) -> int:
         # Check first so an already connected client needs no credential access.
         current = client.probe()
         if current.state == "internet_ok":
-            _emit(args.json, "already_online")
+            _emit(args.json, "already_online", interface=client.interface)
             return 0
         if current.state != "portal_detected":
-            _emit(args.json, current.state)
+            _emit(args.json, current.state, interface=client.interface)
             return EXIT_NETWORK
         credentials = load_credentials(path=args.credentials_file, stdin=args.credentials_stdin)
         result = client.login(credentials)
-        _emit(args.json, result)
+        _emit(args.json, result, interface=client.interface)
         return 0
     except (CredentialError, ServiceError, ValueError, json.JSONDecodeError) as exc:
         print(f"Configuration error: {exc}", file=sys.stderr)

@@ -1,6 +1,8 @@
 import unittest
+import subprocess
+from unittest.mock import patch
 
-from njupt_autologin.client import CampusClient, PortalError, Response
+from njupt_autologin.client import CampusClient, NetworkError, NetworkStatus, PortalError, Response
 from njupt_autologin.credentials import Credentials
 
 
@@ -56,6 +58,66 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(client.probe().state, "internet_ok")
         client._request = lambda *_args, **_kwargs: Response(302, "", "http://10.10.244.11/a79.htm", b"")
         self.assertEqual(client.probe().state, "portal_detected")
+
+
+class AutoInterfaceTests(unittest.TestCase):
+    def test_default_interfaces_are_unique_and_sorted_by_metric(self):
+        output = (
+            "default via 192.0.2.1 dev wlan0 metric 600\n"
+            "default via 10.0.0.1 dev ens33 metric 100\n"
+            "default via 10.0.0.2 dev ens33 metric 200\n"
+        )
+        result = subprocess.CompletedProcess([], 0, output, "")
+        with patch("njupt_autologin.client.subprocess.run", return_value=result):
+            self.assertEqual(CampusClient._default_interfaces(), ["ens33", "wlan0"])
+
+    def test_auto_uses_the_only_default_interface(self):
+        with (
+            patch.object(CampusClient, "_default_interfaces", return_value=["ens33"]),
+            patch.object(CampusClient, "_interface_ip", return_value="10.0.0.2"),
+            patch.object(CampusClient, "_require_route"),
+        ):
+            client = CampusClient("auto")
+        self.assertEqual(client.interface, "ens33")
+
+    def test_auto_prefers_known_njupt_portal(self):
+        def probe(client, attempts=2):
+            del attempts
+            if client.interface == "ens33":
+                return NetworkStatus("portal_detected", 302, "10.10.244.11")
+            return NetworkStatus("internet_ok", 204)
+
+        with (
+            patch.object(CampusClient, "_default_interfaces", return_value=["wlan0", "ens33"]),
+            patch.object(CampusClient, "_interface_ip", side_effect=lambda interface: {"wlan0": "192.0.2.2", "ens33": "10.0.0.2"}[interface]),
+            patch.object(CampusClient, "_require_route"),
+            patch.object(CampusClient, "probe", probe),
+            patch.object(CampusClient, "_status_data", side_effect=PortalError("not campus")),
+        ):
+            client = CampusClient("auto")
+        self.assertEqual(client.interface, "ens33")
+
+    def test_auto_rejects_ambiguous_online_interfaces(self):
+        with (
+            patch.object(CampusClient, "_default_interfaces", return_value=["wlan0", "eth0"]),
+            patch.object(CampusClient, "_interface_ip", return_value="192.0.2.2"),
+            patch.object(CampusClient, "_require_route"),
+            patch.object(CampusClient, "probe", return_value=NetworkStatus("internet_ok", 204)),
+            patch.object(CampusClient, "_status_data", side_effect=PortalError("not campus")),
+        ):
+            with self.assertRaises(NetworkError):
+                CampusClient("auto")
+
+    def test_auto_uses_route_order_when_both_interfaces_are_confirmed_campus(self):
+        with (
+            patch.object(CampusClient, "_default_interfaces", return_value=["eth0", "wlan0"]),
+            patch.object(CampusClient, "_interface_ip", return_value="192.0.2.2"),
+            patch.object(CampusClient, "_require_route"),
+            patch.object(CampusClient, "probe", return_value=NetworkStatus("internet_ok", 204)),
+            patch.object(CampusClient, "_status_data", return_value={"result": 1}),
+        ):
+            client = CampusClient("auto")
+        self.assertEqual(client.interface, "eth0")
 
 
 if __name__ == "__main__":
