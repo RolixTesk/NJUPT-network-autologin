@@ -54,11 +54,13 @@ class NetworkStatus:
 
 
 class CampusClient:
-    def __init__(self, interface: str = "auto", timeout: float = 10.0) -> None:
+    def __init__(
+        self, interface: str = "auto", timeout: float = 10.0, *, prefer_portal: bool = False
+    ) -> None:
         if not 0 < timeout <= 60:
             raise ValueError("timeout must be between 0 and 60 seconds")
         if interface == "auto":
-            interface = self._detect_interface(timeout)
+            interface = self._detect_interface(timeout, prefer_portal=prefer_portal)
         if not re.fullmatch(r"[A-Za-z0-9_.:-]+", interface):
             raise ValueError("invalid interface name")
         self.interface = interface
@@ -91,7 +93,7 @@ class CampusClient:
         return interfaces
 
     @classmethod
-    def _detect_interface(cls, timeout: float) -> str:
+    def _detect_interface(cls, timeout: float, *, prefer_portal: bool = False) -> str:
         candidates = cls._default_interfaces()
         if len(candidates) == 1:
             return candidates[0]
@@ -101,7 +103,7 @@ class CampusClient:
                 client = cls(interface=interface, timeout=min(timeout, 4.0))
                 status = client.probe(attempts=1)
                 if status.state == "portal_detected" and status.portal_host in (PORTAL_HOST, PORTAL_IP):
-                    score = 5
+                    score = 5 if prefer_portal else 4
                 elif status.state == "portal_detected":
                     score = 2
                 elif status.state == "internet_ok":
@@ -110,7 +112,7 @@ class CampusClient:
                     except (NetworkError, PortalError):
                         score = 1
                     else:
-                        score = 4
+                        score = 4 if prefer_portal else 5
                 else:
                     score = 0
                 scored.append((score, interface))
@@ -123,6 +125,20 @@ class CampusClient:
         if best > 0 and len(winners) == 1:
             return winners[0]
         raise NetworkError("cannot uniquely detect the campus interface; specify --interface")
+
+    @classmethod
+    def online_campus_interface(cls, timeout: float = 10.0) -> str | None:
+        """Return the first route-preferred interface with a confirmed online NJUPT session."""
+        for interface in cls._default_interfaces():
+            try:
+                client = cls(interface=interface, timeout=min(timeout, 4.0))
+                if client.probe(attempts=1).state != "internet_ok":
+                    continue
+                client._status_data()
+            except (NetworkError, PortalError):
+                continue
+            return interface
+        return None
 
     @staticmethod
     def _interface_ip(interface: str) -> str:

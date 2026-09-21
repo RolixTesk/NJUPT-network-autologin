@@ -27,6 +27,10 @@ def _parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("status", help="check campus internet/portal state")
     login = commands.add_parser("login", help="authenticate only if a portal is present")
+    login.add_argument(
+        "--force", action="store_true",
+        help="continue to another portal interface even if NJUPT is already online",
+    )
     sources = login.add_mutually_exclusive_group()
     sources.add_argument("--credentials-file", type=Path, help="private JSON or key-style credential file")
     sources.add_argument("--credentials-stdin", action="store_true", help="read JSON or key-style credentials from stdin")
@@ -88,7 +92,16 @@ def main(argv: list[str] | None = None) -> int:
             uninstall_service(remove_credentials=args.remove_credentials)
             _emit(args.json, "service_uninstalled")
             return 0
-        client = CampusClient(interface=args.interface, timeout=args.timeout)
+        if args.command == "login" and not args.force:
+            online_interface = CampusClient.online_campus_interface(args.timeout)
+            if online_interface:
+                _emit(args.json, "already_online", interface=online_interface)
+                return 0
+        client = CampusClient(
+            interface=args.interface,
+            timeout=args.timeout,
+            prefer_portal=args.command == "login" and args.force,
+        )
         if args.command == "status":
             status = client.probe()
             _emit(

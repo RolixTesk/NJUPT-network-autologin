@@ -97,6 +97,66 @@ class AutoInterfaceTests(unittest.TestCase):
             client = CampusClient("auto")
         self.assertEqual(client.interface, "ens33")
 
+    def test_auto_prefers_confirmed_online_campus_by_default(self):
+        def probe(client, attempts=2):
+            del attempts
+            if client.interface == "ens38":
+                return NetworkStatus("portal_detected", 302, "10.10.244.11")
+            return NetworkStatus("internet_ok", 204)
+
+        def status_data(client):
+            if client.interface == "ens33":
+                return {"result": 1}
+            raise PortalError("not online")
+
+        common = (
+            patch.object(CampusClient, "_default_interfaces", return_value=["ens33", "ens38"]),
+            patch.object(CampusClient, "_interface_ip", return_value="10.0.0.2"),
+            patch.object(CampusClient, "_require_route"),
+            patch.object(CampusClient, "probe", probe),
+            patch.object(CampusClient, "_status_data", status_data),
+        )
+        with common[0], common[1], common[2], common[3], common[4]:
+            client = CampusClient("auto")
+        self.assertEqual(client.interface, "ens33")
+
+    def test_force_prefers_waiting_portal_over_online_campus(self):
+        def probe(client, attempts=2):
+            del attempts
+            if client.interface == "ens38":
+                return NetworkStatus("portal_detected", 302, "10.10.244.11")
+            return NetworkStatus("internet_ok", 204)
+
+        def status_data(client):
+            if client.interface == "ens33":
+                return {"result": 1}
+            raise PortalError("not online")
+
+        with (
+            patch.object(CampusClient, "_default_interfaces", return_value=["ens33", "ens38"]),
+            patch.object(CampusClient, "_interface_ip", return_value="10.0.0.2"),
+            patch.object(CampusClient, "_require_route"),
+            patch.object(CampusClient, "probe", probe),
+            patch.object(CampusClient, "_status_data", status_data),
+        ):
+            client = CampusClient("auto", prefer_portal=True)
+        self.assertEqual(client.interface, "ens38")
+
+    def test_online_campus_interface_returns_route_preferred_session(self):
+        def probe(client, attempts=2):
+            del attempts
+            state = "internet_ok" if client.interface == "ens33" else "portal_detected"
+            return NetworkStatus(state)
+
+        with (
+            patch.object(CampusClient, "_default_interfaces", return_value=["ens33", "ens38"]),
+            patch.object(CampusClient, "_interface_ip", return_value="10.0.0.2"),
+            patch.object(CampusClient, "_require_route"),
+            patch.object(CampusClient, "probe", probe),
+            patch.object(CampusClient, "_status_data", return_value={"result": 1}),
+        ):
+            self.assertEqual(CampusClient.online_campus_interface(), "ens33")
+
     def test_auto_rejects_ambiguous_online_interfaces(self):
         with (
             patch.object(CampusClient, "_default_interfaces", return_value=["wlan0", "eth0"]),
