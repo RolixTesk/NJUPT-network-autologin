@@ -10,7 +10,7 @@ from pathlib import Path
 
 from .client import AuthenticationError, CampusClient, NetworkError, PortalError
 from .credentials import CredentialError, Credentials, load_credentials, save_credentials
-from .service import ServiceError, install_service, uninstall_service
+from .service import ServiceError, install_service, pause_service, resume_service, uninstall_service
 
 
 EXIT_PORTAL = 2
@@ -34,6 +34,7 @@ def _parser() -> argparse.ArgumentParser:
     sources = login.add_mutually_exclusive_group()
     sources.add_argument("--credentials-file", type=Path, help="private JSON or key-style credential file")
     sources.add_argument("--credentials-stdin", action="store_true", help="read JSON or key-style credentials from stdin")
+    commands.add_parser("logout", help="log out the selected campus interface and pause the timer")
     configure = commands.add_parser("configure", help="write a private local credential file")
     inputs = configure.add_mutually_exclusive_group()
     inputs.add_argument("--from-file", type=Path, help="import a private credential file")
@@ -57,6 +58,8 @@ def _emit(as_json: bool, state: str, **extra: object) -> None:
             "network_unavailable": "Network unavailable",
             "unexpected_response": "Unexpected HTTP response",
             "login_success": "Login successful; Internet OK",
+            "logout_success": "Logout successful; portal detected",
+            "already_offline": "Already logged out; portal detected",
             "configured": "Credentials saved",
             "service_installed": "User service and timer installed",
             "service_uninstalled": "User service and timer removed",
@@ -102,6 +105,16 @@ def main(argv: list[str] | None = None) -> int:
             timeout=args.timeout,
             prefer_portal=args.command == "login" and args.force,
         )
+        if args.command == "logout":
+            timer_was_active = pause_service()
+            try:
+                result = client.logout()
+            except Exception:
+                if timer_was_active:
+                    resume_service()
+                raise
+            _emit(args.json, result, interface=client.interface, timer_paused=timer_was_active)
+            return 0
         if args.command == "status":
             status = client.probe()
             _emit(

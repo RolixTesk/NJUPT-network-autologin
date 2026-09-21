@@ -4,7 +4,13 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from njupt_autologin.service import ServiceError, enable_linger, install_service, uninstall_service
+from njupt_autologin.service import (
+    ServiceError,
+    enable_linger,
+    install_service,
+    pause_service,
+    uninstall_service,
+)
 
 
 def completed(command, returncode=0):
@@ -85,6 +91,12 @@ class ServiceTests(unittest.TestCase):
         ):
             enable_linger()
         self.assertEqual(run.call_args.args[0][:2], ["/usr/bin/pkexec", "loginctl"])
+
+    def test_pause_service_stops_an_active_timer(self):
+        responses = iter((completed([], 0), completed([], 0)))
+        with patch("njupt_autologin.service._run", side_effect=lambda *_args, **_kwargs: next(responses)) as run:
+            self.assertTrue(pause_service())
+        self.assertEqual(run.call_args_list[1].args[0][-2:], ["stop", "njupt-autologin.timer"])
 
 
 if __name__ == "__main__":

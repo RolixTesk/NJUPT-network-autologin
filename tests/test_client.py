@@ -1,6 +1,6 @@
-import unittest
 import subprocess
-from unittest.mock import patch
+import unittest
+from unittest.mock import Mock, patch
 
 from njupt_autologin.client import CampusClient, NetworkError, NetworkStatus, PortalError, Response
 from njupt_autologin.credentials import Credentials
@@ -58,6 +58,28 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(client.probe().state, "internet_ok")
         client._request = lambda *_args, **_kwargs: Response(302, "", "http://10.10.244.11/a79.htm", b"")
         self.assertEqual(client.probe().state, "portal_detected")
+
+    def test_logout_verifies_portal_transition(self):
+        client = object.__new__(CampusClient)
+        client.interface = "ens33"
+        client.timeout = 5
+        client.probe = Mock(side_effect=(
+            NetworkStatus("internet_ok", 204),
+            NetworkStatus("portal_detected", 302, "10.10.244.11"),
+        ))
+        client._request = Mock(return_value=Response(200, "text/html", "", b"failure marker"))
+        with patch("njupt_autologin.client.time.sleep"):
+            self.assertEqual(client.logout(), "logout_success")
+        request = client._request.call_args
+        self.assertEqual(request.args[:2], ("10.10.244.11", 801))
+        self.assertIn("ACSetting&a=Logout", request.args[2])
+
+    def test_logout_is_idempotent_when_portal_is_already_present(self):
+        client = object.__new__(CampusClient)
+        client.probe = Mock(return_value=NetworkStatus("portal_detected", 302))
+        client._request = Mock()
+        self.assertEqual(client.logout(), "already_offline")
+        client._request.assert_not_called()
 
 
 class AutoInterfaceTests(unittest.TestCase):

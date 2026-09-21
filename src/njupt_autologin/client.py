@@ -348,3 +348,24 @@ class CampusClient:
             if self.probe(attempts=1).state == "internet_ok":
                 return "login_success"
         raise AuthenticationError("portal accepted login, but internet check still fails")
+
+    def logout(self) -> str:
+        initial = self.probe()
+        if initial.state == "portal_detected":
+            return "already_offline"
+        if initial.state != "internet_ok":
+            raise NetworkError(f"cannot log out from state {initial.state}")
+        response = self._request(
+            PORTAL_IP, 801,
+            "/eportal/?c=ACSetting&a=Logout&ver=1.0&url=drappall",
+            secure=False,
+        )
+        if response.status != 200:
+            raise PortalError(f"logout endpoint returned HTTP {response.status}")
+        # The configured AC endpoint returns a failure marker even when logout
+        # succeeds asynchronously, so only the bound-interface probe is authoritative.
+        for delay in (0.5, 1.0, 2.0, 4.0):
+            time.sleep(delay)
+            if self.probe(attempts=1).state == "portal_detected":
+                return "logout_success"
+        raise PortalError("logout request completed, but the interface remains online")

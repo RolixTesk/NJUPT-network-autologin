@@ -10,12 +10,15 @@ import tkinter as tk
 from collections.abc import Callable
 from tkinter import messagebox, ttk
 
+from .client import AuthenticationError, CampusClient, NetworkError, PortalError
 from .credentials import CredentialError, Credentials, default_path, load_credentials, save_credentials
 from .service import (
     ServiceError,
     ServiceStatus,
     enable_linger,
     install_service,
+    pause_service,
+    resume_service,
     service_status,
     uninstall_service,
 )
@@ -86,20 +89,24 @@ class App:
         install_button.grid(row=6, column=1, sticky="ew", padx=(5, 0))
         self.buttons.extend((save_button, install_button))
 
-        ttk.Separator(frame).grid(row=7, column=0, columnspan=2, sticky="ew", pady=16)
+        logout_button = ttk.Button(frame, text="注销当前校园网会话", command=self.logout)
+        logout_button.grid(row=7, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        self.buttons.append(logout_button)
+
+        ttk.Separator(frame).grid(row=8, column=0, columnspan=2, sticky="ew", pady=16)
         ttk.Label(frame, text="服务状态", font=("TkDefaultFont", 11, "bold")).grid(
-            row=8, column=0, sticky="w"
+            row=9, column=0, sticky="w"
         )
         ttk.Label(frame, textvariable=self.status_text, wraplength=390).grid(
-            row=9, column=0, columnspan=2, sticky="w", pady=(7, 10)
+            row=10, column=0, columnspan=2, sticky="w", pady=(7, 10)
         )
         ttk.Checkbutton(
             frame, text="卸载时同时删除保存的登录信息", variable=self.remove_credentials
-        ).grid(row=10, column=0, columnspan=2, sticky="w", pady=(0, 8))
+        ).grid(row=11, column=0, columnspan=2, sticky="w", pady=(0, 8))
         remove_button = ttk.Button(frame, text="卸载开机自启服务", command=self.uninstall)
         refresh_button = ttk.Button(frame, text="刷新状态", command=self.refresh_status)
-        remove_button.grid(row=11, column=0, sticky="ew", padx=(0, 5))
-        refresh_button.grid(row=11, column=1, sticky="ew", padx=(5, 0))
+        remove_button.grid(row=12, column=0, sticky="ew", padx=(0, 5))
+        refresh_button.grid(row=12, column=1, sticky="ew", padx=(5, 0))
         self.buttons.extend((remove_button, refresh_button))
         frame.columnconfigure(1, weight=1)
 
@@ -150,7 +157,10 @@ class App:
         def worker() -> None:
             try:
                 result = action()
-            except (CredentialError, ServiceError, OSError, ValueError) as exc:
+            except (
+                AuthenticationError, CredentialError, NetworkError,
+                PortalError, ServiceError, OSError, ValueError,
+            ) as exc:
                 results.put((False, str(exc)))
             else:
                 results.put((True, result))
@@ -212,6 +222,26 @@ class App:
             lambda: uninstall_service(remove_credentials=remove_credentials),
             "开机自启服务已卸载。",
         )
+
+    def logout(self) -> None:
+        if not messagebox.askyesno(
+            "确认注销",
+            "确定要注销当前校园网会话吗？自动登录定时器将暂停，重启后恢复。",
+            parent=self.root,
+        ):
+            return
+        interface = self.interface.get().strip()
+
+        def action() -> None:
+            timer_was_active = pause_service()
+            try:
+                CampusClient(interface=interface).logout()
+            except Exception:
+                if timer_was_active:
+                    resume_service()
+                raise
+
+        self._run_async(action, "校园网会话已注销；正在运行的自动登录定时器已暂停。")
 
     @staticmethod
     def _format_status(status: ServiceStatus) -> str:

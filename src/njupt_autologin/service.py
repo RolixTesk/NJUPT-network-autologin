@@ -71,6 +71,18 @@ def service_status() -> ServiceStatus:
     return ServiceStatus(installed, enabled, active, _linger_enabled())
 
 
+def pause_service() -> bool:
+    """Stop the active timer and return whether it must be restored after a failure."""
+    active = _run(["systemctl", "--user", "is-active", TIMER_NAME], check=False).returncode == 0
+    if active:
+        _run(["systemctl", "--user", "stop", TIMER_NAME])
+    return active
+
+
+def resume_service() -> None:
+    _run(["systemctl", "--user", "start", TIMER_NAME])
+
+
 def _quote(value: str) -> str:
     return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
