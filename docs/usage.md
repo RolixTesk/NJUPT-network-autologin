@@ -53,7 +53,7 @@ printf '%s\n' '{"username":"example","password":"example","operator":"mobile"}' 
 
 ```bash
 python3 packaging/debian/build_deb.py
-sudo apt install ./dist/njupt-autologin_0.9.0_all.deb
+sudo apt install ./dist/njupt-autologin_0.9.1_all.deb
 ```
 
 软件包安装 CLI、原生桌面 GUI、桌面菜单入口以及 systemd 用户服务和定时器。`apt` 会自动处理 `python3`、`python3-tk`、`iproute2`、`systemd` 和 `pkexec` 前置依赖。安装后可以通过 GUI 配置并启用服务，也可以直接执行：
@@ -76,7 +76,7 @@ njupt-autologin login -help
 
 Windows 安装包与便携版均包含 Python 和 Tk 运行时，使用时不需要安装 Python 或第三方包。运行安装程序后，从开始菜单打开“NJUPT 校园网自动登录”；便携版解压后运行 `njupt-autologin-gui.exe`。程序将凭据保存在 `%APPDATA%\njupt-autologin\credentials.json`，并通过 Windows ACL 限制为当前用户访问。
 
-安装服务后，程序使用当前用户的 Windows 任务计划程序每 2 分钟检查一次网络，并在用户登录 Windows 后自动运行。GUI 注销校园网时会暂停本次系统启动期间的自动登录；重启 Windows 后自动恢复。安装程序卸载时会移除任务计划，默认保留凭据。
+安装服务后，程序在用户登录 Windows 约 30 秒后自动运行一次，不再周期检测。后台任务使用无控制台程序，GUI 调用 PowerShell 等系统组件时也不会显示终端窗口。GUI 注销校园网后，本次系统启动期间不会再次自动登录；重启并重新登录 Windows 后自动恢复。安装程序卸载时会移除任务计划，默认保留凭据。
 
 在 Windows 开发机上构建发布包：
 
@@ -96,7 +96,7 @@ njupt-autologin install-service
 systemctl --user status njupt-autologin.timer
 ```
 
-安装命令把当前 Python 包复制到 `~/.local/share/njupt-autologin/app/`，创建用户级 oneshot 服务和定时器，并启用定时器。服务启动后约 30 秒首次检查，此后每 2 分钟检查一次。登录失败会返回非零状态，由下一次定时检查再试，不会快速循环请求。
+安装命令把当前 Python 包复制到 `~/.local/share/njupt-autologin/app/`，创建用户级 oneshot 服务和启动定时器，并启用定时器。用户服务管理器启动约 30 秒后执行一次，此后不再周期检测。若启动时网络尚不可用，可以从 GUI 点击“立即登录校园网”；下次系统启动时仍会自动尝试。
 
 若需在用户未登录桌面或 SSH 时开机启动，系统管理员需为该用户启用 linger：
 
@@ -124,7 +124,7 @@ njupt-autologin-gui
 
 界面分为登录配置、登录状态和服务状态三块。没有保存凭据时，登录配置默认展开；已有凭据时默认收起，可从登录状态右上角的“登录配置”按钮以动画展开。网络接口使用只读下拉栏，自动列出当前可用的默认路由设备，并以 `auto` 为默认值。密码输入框会遮蔽内容，已保存凭据存在时留空表示沿用原密码。
 
-登录状态同时核对校园网认证会话与普通外部网站连通性，并提供立即登录和注销操作。如果检测到多个默认路由网卡同时拥有校园网会话，界面会显示红色提醒。服务状态单独显示服务安装、定时器启用和开机运行状态；已启用但当前暂停的定时器显示为正常的“已启用”。
+登录状态同时核对校园网认证会话与普通外部网站连通性，并提供立即登录和注销操作。如果检测到多个默认路由网卡同时拥有校园网会话，界面会显示红色提醒。服务状态单独显示服务安装、启动任务启用和开机运行状态；已启用但本次启动已执行或暂停的任务显示为正常的“已启用”。
 
 “立即登录校园网”会先检查是否已有 NJUPT 在线会话，已在线时直接返回；需要认证时才读取表单或已保存的密码，并在成功后保存登录信息。“安装并启用开机自启”会在完成服务安装后立即执行同一登录流程，避免首次安装后等待 timer。网络与服务操作在后台线程执行，窗口不会因请求而停止响应。
 

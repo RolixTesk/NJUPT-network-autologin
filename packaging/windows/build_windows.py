@@ -98,6 +98,7 @@ WizardStyle=modern
 [Files]
 Source: "{source}\\njupt-autologin.exe"; DestDir: "{{app}}"; Flags: ignoreversion
 Source: "{source}\\njupt-autologin-gui.exe"; DestDir: "{{app}}"; Flags: ignoreversion
+Source: "{source}\\njupt-autologin-task.exe"; DestDir: "{{app}}"; Flags: ignoreversion
 
 [Icons]
 Name: "{{group}}\\NJUPT 校园网自动登录"; Filename: "{{app}}\\njupt-autologin-gui.exe"
@@ -107,10 +108,21 @@ Name: "{{autodesktop}}\\NJUPT 校园网自动登录"; Filename: "{{app}}\\njupt-
 Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "快捷方式："
 
 [Run]
+Filename: "{{app}}\\njupt-autologin.exe"; Parameters: "install-service"; Flags: runhidden waituntilterminated; Check: ExistingAutoLoginTask
 Filename: "{{app}}\\njupt-autologin-gui.exe"; Description: "启动 NJUPT 校园网自动登录"; Flags: nowait postinstall skipifsilent
 
 [UninstallRun]
 Filename: "{{app}}\\njupt-autologin.exe"; Parameters: "uninstall-service"; Flags: runhidden waituntilterminated skipifdoesntexist; RunOnceId: "RemoveNJUPTTask"
+
+[Code]
+function ExistingAutoLoginTask(): Boolean;
+var
+  ResultCode: Integer;
+begin
+  Result := Exec(ExpandConstant('{{sys}}\\schtasks.exe'),
+    '/Query /TN "NJUPT Auto Login"', '', SW_HIDE,
+    ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
+end;
 """,
         encoding="utf-8-sig",
     )
@@ -140,6 +152,7 @@ def build(output_dir: Path) -> tuple[Path, Path | None]:
         binaries.mkdir()
         _pyinstaller(cli_entry, "njupt-autologin", staging, work, binaries, windowed=False)
         _pyinstaller(gui_entry, "njupt-autologin-gui", staging, work, binaries, windowed=True)
+        _pyinstaller(cli_entry, "njupt-autologin-task", staging, work, binaries, windowed=True)
         shutil.copy2(package / "app-icon.ico", binaries / "app-icon.ico")
         (binaries / "README.txt").write_text(
             "NJUPT 校园网自动登录\n\n"

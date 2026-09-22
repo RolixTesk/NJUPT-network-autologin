@@ -8,6 +8,7 @@ import sys
 import threading
 import tkinter as tk
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from importlib import resources
 from tkinter import messagebox, ttk
 
@@ -86,10 +87,7 @@ class App:
         self._animation_job: str | None = None
         self._credentials_visible = False
         self._has_credentials = self._load_existing()
-        try:
-            self.interface_values = ("auto", *self.services.available_interfaces())
-        except EXPECTED_ERRORS:
-            self.interface_values = ("auto",)
+        self.interface_values = ("auto",)
 
         self._configure_style()
         self._build()
@@ -290,7 +288,7 @@ class App:
         for column in range(3):
             status.columnconfigure(column, weight=1, uniform="status")
         ttk.Label(status, text="服务状态", style="Section.TLabel").grid(row=0, column=0, sticky="w")
-        for column, label in enumerate(("自动登录服务", "定时器", "开机运行")):
+        for column, label in enumerate(("自动登录服务", "启动任务", "开机运行")):
             tile = tk.Frame(status, background=FIELD, padx=12, pady=9)
             tile.grid(
                 row=1, column=column, sticky="ew",
@@ -370,23 +368,27 @@ class App:
         self.operator.set(OPERATOR_LABELS.get(credentials.operator.strip().lower(), "中国移动"))
         return True
 
-    def _refresh_interface_choices(self) -> None:
-        try:
-            interfaces = self.services.available_interfaces()
-        except EXPECTED_ERRORS:
-            interfaces = ()
+    def _apply_interface_choices(self, value: object) -> None:
+        interfaces = value if isinstance(value, tuple) else ()
         values = ("auto", *interfaces)
         self.interface_values = tuple(dict.fromkeys(values))
         self.interface_box.configure(values=self.interface_values)
         if self.interface.get() not in self.interface_values:
             self.interface.set("auto")
 
+    def _request_interface_choices(self) -> None:
+        self._background(
+            self.services.available_interfaces,
+            self._apply_interface_choices,
+            lambda _message: None,
+        )
+
     def toggle_credentials(self) -> None:
         self._set_credentials_visible(not self._credentials_visible, animate=True)
 
     def _set_credentials_visible(self, visible: bool, *, animate: bool) -> None:
         if visible:
-            self._refresh_interface_choices()
+            self._request_interface_choices()
         if self._animation_job is not None:
             self.root.after_cancel(self._animation_job)
             self._animation_job = None
@@ -568,7 +570,7 @@ class App:
 
     def logout(self) -> None:
         if not messagebox.askyesno(
-            "确认注销", "确定要注销当前校园网会话吗？自动登录定时器将暂停，重启后恢复。", parent=self.root,
+            "确认注销", "确定要注销当前校园网会话吗？本次启动不会再次自动登录。", parent=self.root,
         ):
             return
         interface = self.current_connection_interface or self.interface.get().strip()
@@ -581,7 +583,7 @@ class App:
                 if timer_was_active:
                     self.services.resume()
                 raise
-            return "校园网会话已注销；正在运行的自动登录定时器已暂停。"
+            return "校园网会话已注销；自动登录将在下次系统启动时恢复。"
 
         self._run_async(action, "正在注销校园网会话…")
 
@@ -591,16 +593,23 @@ class App:
         if not keep_message:
             self._set_operation("正在检测校园网与服务状态…", scope="connection")
 
+        def read_connection() -> ConnectionSnapshot | str:
+            try:
+                return connection_status(interface)
+            except EXPECTED_ERRORS as exc:
+                return str(exc)
+
+        def read_service() -> ServiceStatus | str:
+            try:
+                return self.services.status()
+            except EXPECTED_ERRORS as exc:
+                return str(exc)
+
         def action() -> tuple[ConnectionSnapshot | str, ServiceStatus | str]:
-            try:
-                connection: ConnectionSnapshot | str = connection_status(interface)
-            except EXPECTED_ERRORS as exc:
-                connection = str(exc)
-            try:
-                service: ServiceStatus | str = self.services.status()
-            except EXPECTED_ERRORS as exc:
-                service = str(exc)
-            return connection, service
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                connection = pool.submit(read_connection)
+                service = pool.submit(read_service)
+                return connection.result(), service.result()
 
         self._background(
             action,

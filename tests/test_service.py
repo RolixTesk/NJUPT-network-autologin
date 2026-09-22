@@ -42,6 +42,9 @@ class ServiceTests(unittest.TestCase):
             self.assertIn('--interface "ens33"', service_text)
             self.assertNotIn("secret-content", service_text)
             self.assertTrue(timer.is_file())
+            timer_text = timer.read_text(encoding="utf-8")
+            self.assertIn("OnStartupSec=30s", timer_text)
+            self.assertNotIn("OnUnitActiveSec", timer_text)
             self.assertEqual(commands[-1][-2:], ["--now", "njupt-autologin.timer"])
 
     def test_install_rejects_invalid_interface(self):

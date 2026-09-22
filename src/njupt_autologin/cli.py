@@ -53,11 +53,11 @@ def _parser() -> argparse.ArgumentParser:
     inputs.add_argument("--credentials-stdin", action="store_true", help="read credentials from stdin")
     configure.add_argument("--output", type=Path, help="destination credential file")
     service = commands.add_parser(
-        "install-service", help="install and enable periodic automatic login", add_help=False,
+        "install-service", help="install and enable automatic login at startup", add_help=False,
     )
     service.add_argument("--credentials-file", type=Path, help="private credential file to use")
     remove = commands.add_parser(
-        "uninstall-service", help="disable and remove periodic automatic login", add_help=False,
+        "uninstall-service", help="disable and remove automatic login at startup", add_help=False,
     )
     remove.add_argument("--remove-credentials", action="store_true", help="also delete saved credentials")
     for command in (status, login, logout, configure, service, remove):

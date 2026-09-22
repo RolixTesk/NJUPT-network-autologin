@@ -37,6 +37,8 @@ class WindowsServiceTests(unittest.TestCase):
             ):
                 adapter.install("Ethernet 2", credential)
             command = run.call_args.args[0]
+            self.assertEqual(command[command.index("/SC") + 1], "ONLOGON")
+            self.assertNotIn("/MO", command)
             task_action = command[command.index("/TR") + 1]
             self.assertIn(str(credential.resolve()), task_action)
             self.assertNotIn("private", task_action)

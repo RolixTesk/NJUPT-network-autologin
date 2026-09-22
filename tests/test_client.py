@@ -157,6 +157,20 @@ class ProtocolTests(unittest.TestCase):
 
 
 class AutoInterfaceTests(unittest.TestCase):
+    def test_windows_route_and_address_share_one_snapshot(self):
+        snapshot = [
+            {"name": "Ethernet1", "address": "10.161.209.225"},
+            {"name": "Ethernet0", "address": "10.161.209.221"},
+        ]
+        with (
+            patch("njupt_autologin.client.sys.platform", "win32"),
+            patch("njupt_autologin.client._WINDOWS_NETWORK_CACHE", None),
+            patch("njupt_autologin.client._powershell_json", return_value=snapshot) as powershell,
+        ):
+            self.assertEqual(CampusClient._default_interfaces(), ["Ethernet1", "Ethernet0"])
+            self.assertEqual(CampusClient._interface_ip("Ethernet1"), "10.161.209.225")
+        powershell.assert_called_once()
+
     def test_default_interfaces_are_unique_and_sorted_by_metric(self):
         output = (
             "default via 192.0.2.1 dev wlan0 metric 600\n"

@@ -1,10 +1,8 @@
 [Unit]
-Description=Check NJUPT wired network login periodically
+Description=Check NJUPT wired network login after startup
 
 [Timer]
 OnStartupSec=30s
-OnUnitActiveSec=2min
-Persistent=true
 Unit=njupt-autologin.service
 
 [Install]

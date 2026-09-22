@@ -20,7 +20,10 @@ TASK_NAME = "NJUPT Auto Login"
 
 def _run(command: list[str], *, check: bool = True, timeout: int = 20) -> subprocess.CompletedProcess[bytes]:
     try:
-        result = subprocess.run(command, capture_output=True, timeout=timeout)
+        result = subprocess.run(
+            command, capture_output=True, timeout=timeout,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
     except (OSError, subprocess.SubprocessError) as exc:
         raise ServiceError(f"cannot run {command[0]}") from exc
     if check and result.returncode:
@@ -52,12 +55,14 @@ def _pause_path() -> Path:
 
 def _task_command(interface: str, credential: Path) -> str:
     if getattr(sys, "frozen", False):
-        executable = Path(sys.executable).with_name("njupt-autologin.exe")
+        executable = Path(sys.executable).with_name("njupt-autologin-task.exe")
         if not executable.is_file():
-            raise ServiceError("njupt-autologin.exe is missing beside the GUI")
+            raise ServiceError("njupt-autologin-task.exe is missing beside the application")
         command = [str(executable)]
     else:
-        command = [sys.executable, "-m", "njupt_autologin"]
+        python = Path(sys.executable)
+        windowless = python.with_name("pythonw.exe")
+        command = [str(windowless if windowless.is_file() else python), "-m", "njupt_autologin"]
     command.extend([
         "--interface", interface, "login", "--scheduled",
         "--credentials-file", str(credential),
@@ -100,7 +105,7 @@ else {{ ConvertTo-Json -Compress @{{installed=$true;enabled=($task.State -ne 'Di
         credential = (credential_path or default_path()).expanduser().resolve()
         load_credentials(path=credential)
         _run([
-            "schtasks.exe", "/Create", "/SC", "MINUTE", "/MO", "2",
+            "schtasks.exe", "/Create", "/SC", "ONLOGON", "/DELAY", "0000:30",
             "/TN", TASK_NAME, "/TR", _task_command(interface, credential), "/F",
         ])
         self.resume()

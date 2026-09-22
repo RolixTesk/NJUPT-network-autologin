@@ -124,11 +124,9 @@ def install_service(interface: str = "auto", credential_path: Path | None = None
     )
     timer.write_text(
         "[Unit]\n"
-        "Description=Check NJUPT wired network login periodically\n\n"
+        "Description=Check NJUPT wired network login after startup\n\n"
         "[Timer]\n"
         "OnStartupSec=30s\n"
-        "OnUnitActiveSec=2min\n"
-        "Persistent=true\n"
         "Unit=njupt-autologin.service\n\n"
         "[Install]\n"
         "WantedBy=timers.target\n",

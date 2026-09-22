@@ -12,6 +12,7 @@ import socket
 import ssl
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from urllib.parse import urlencode, urlsplit
@@ -27,6 +28,9 @@ EXTERNAL_CHECK_PATH = "/favicon.ico"
 USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64; rv:150.0) Gecko/20100101 Firefox/150.0"
 JS_VERSION = "4.5"
 MAX_RESPONSE = 262_144
+WINDOWS_NETWORK_CACHE_SECONDS = 5.0
+_WINDOWS_NETWORK_CACHE: tuple[float, list[dict[str, str]]] | None = None
+_WINDOWS_NETWORK_LOCK = threading.Lock()
 
 
 class NetworkError(RuntimeError):
@@ -41,11 +45,6 @@ class AuthenticationError(RuntimeError):
     pass
 
 
-def _powershell_quote(value: str) -> str:
-    """Quote a literal string for a generated PowerShell expression."""
-    return "'" + value.replace("'", "''") + "'"
-
-
 def _powershell_json(script: str, error: str) -> object:
     encoded = base64.b64encode(
         ("$ProgressPreference='SilentlyContinue';"
@@ -56,10 +55,56 @@ def _powershell_json(script: str, error: str) -> object:
         result = subprocess.run(
             ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
             check=True, capture_output=True, timeout=8,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         return json.loads(result.stdout.decode("utf-8-sig"))
     except (OSError, subprocess.SubprocessError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise NetworkError(error) from exc
+
+
+def _windows_network_snapshot() -> list[dict[str, str]]:
+    """Read default-route aliases and addresses once for a short GUI refresh cycle."""
+    global _WINDOWS_NETWORK_CACHE
+    with _WINDOWS_NETWORK_LOCK:
+        now = time.monotonic()
+        if _WINDOWS_NETWORK_CACHE is not None:
+            recorded, cached = _WINDOWS_NETWORK_CACHE
+            if now - recorded < WINDOWS_NETWORK_CACHE_SECONDS:
+                return [item.copy() for item in cached]
+        script = r"""
+$routes = @(Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction Stop |
+    Where-Object { $_.InterfaceAlias -and $_.InterfaceAlias -ne 'Loopback Pseudo-Interface 1' } |
+    Sort-Object @{Expression={$_.RouteMetric + $_.InterfaceMetric}}, ifIndex)
+$seen = @{}
+$items = @()
+foreach ($route in $routes) {
+    $name = [string]$route.InterfaceAlias
+    if ($seen.ContainsKey($name)) { continue }
+    $seen[$name] = $true
+    $address = Get-NetIPAddress -AddressFamily IPv4 -InterfaceAlias $name -ErrorAction SilentlyContinue |
+        Where-Object { $_.IPAddress -notlike '169.254.*' -and $_.AddressState -ne 'Duplicate' } |
+        Sort-Object @{Expression={if ($_.AddressState -eq 'Preferred') { 0 } else { 1 }}}, PrefixLength |
+        Select-Object -First 1 -ExpandProperty IPAddress
+    if ($address) { $items += [pscustomobject]@{name=$name; address=[string]$address} }
+}
+ConvertTo-Json -Compress -InputObject @($items)
+"""
+        value = _powershell_json(script, "cannot inspect default routes")
+        values = [value] if isinstance(value, dict) else value
+        if not isinstance(values, list):
+            raise NetworkError("cannot inspect default routes")
+        snapshot: list[dict[str, str]] = []
+        for item in values:
+            if not isinstance(item, dict):
+                raise NetworkError("cannot inspect default routes")
+            name, address = item.get("name"), item.get("address")
+            if not isinstance(name, str) or not isinstance(address, str):
+                raise NetworkError("cannot inspect default routes")
+            snapshot.append({"name": name, "address": address})
+        if not snapshot:
+            raise NetworkError("no IPv4 default-route interface is available")
+        _WINDOWS_NETWORK_CACHE = (now, snapshot)
+        return [item.copy() for item in snapshot]
 
 
 @dataclass(frozen=True)
@@ -95,21 +140,7 @@ class CampusClient:
     @staticmethod
     def _default_interfaces() -> list[str]:
         if sys.platform == "win32":
-            script = r"""
-$items = @(Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction Stop |
-    Where-Object { $_.InterfaceAlias -and $_.InterfaceAlias -ne 'Loopback Pseudo-Interface 1' } |
-    Sort-Object @{Expression={$_.RouteMetric + $_.InterfaceMetric}}, ifIndex |
-    Select-Object -ExpandProperty InterfaceAlias -Unique)
-ConvertTo-Json -Compress -InputObject $items
-"""
-            values = _powershell_json(script, "cannot inspect default routes")
-            interfaces = [values] if isinstance(values, str) else values
-            if not isinstance(interfaces, list) or not all(isinstance(item, str) for item in interfaces):
-                raise NetworkError("cannot inspect default routes")
-            interfaces = list(dict.fromkeys(item for item in interfaces if item))
-            if not interfaces:
-                raise NetworkError("no IPv4 default-route interface is available")
-            return interfaces
+            return [item["name"] for item in _windows_network_snapshot()]
         try:
             result = subprocess.run(
                 ["ip", "-4", "-o", "route", "show", "default"],
@@ -189,22 +220,13 @@ ConvertTo-Json -Compress -InputObject $items
     @staticmethod
     def _interface_ip(interface: str) -> str:
         if sys.platform == "win32":
-            quoted = _powershell_quote(interface)
-            script = f"""
-$items = @(Get-NetIPAddress -AddressFamily IPv4 -InterfaceAlias {quoted} -ErrorAction Stop |
-    Where-Object {{ $_.IPAddress -notlike '169.254.*' -and $_.AddressState -ne 'Duplicate' }} |
-    Sort-Object @{{Expression={{if ($_.AddressState -eq 'Preferred') {{ 0 }} else {{ 1 }}}}}}, PrefixLength |
-    Select-Object -ExpandProperty IPAddress)
-ConvertTo-Json -Compress -InputObject $items
-"""
-            values = _powershell_json(script, "cannot inspect the campus interface")
-            addresses = [values] if isinstance(values, str) else values
-            if not isinstance(addresses, list) or not addresses:
-                raise NetworkError("campus interface has no IPv4 address")
-            try:
-                return str(ipaddress.IPv4Address(addresses[0]))
-            except (ValueError, TypeError) as exc:
-                raise NetworkError("campus interface has no valid IPv4 address") from exc
+            for item in _windows_network_snapshot():
+                if item["name"] == interface:
+                    try:
+                        return str(ipaddress.IPv4Address(item["address"]))
+                    except ValueError as exc:
+                        raise NetworkError("campus interface has no valid IPv4 address") from exc
+            raise NetworkError("campus interface has no IPv4 address")
         try:
             result = subprocess.run(
                 ["ip", "-4", "-o", "addr", "show", "dev", interface],

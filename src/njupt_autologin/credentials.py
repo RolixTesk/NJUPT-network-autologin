@@ -140,12 +140,14 @@ def _secure_windows_file(path: Path) -> None:
     try:
         identity = subprocess.run(
             ["whoami.exe"], check=True, capture_output=True, text=True, timeout=5,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         ).stdout.strip()
         if not identity:
             raise OSError("empty Windows identity")
         subprocess.run(
             ["icacls.exe", str(path), "/inheritance:r", "/grant:r", f"{identity}:(F)"],
             check=True, capture_output=True, timeout=10,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
     except (OSError, subprocess.SubprocessError) as exc:
         try:
