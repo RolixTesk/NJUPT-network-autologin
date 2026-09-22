@@ -66,6 +66,10 @@ def build(output_dir: Path) -> Path:
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(ROOT / "packaging" / "debian" / name, target)
             target.chmod(0o644)
+        icon = tree / "usr" / "share" / "icons" / "hicolor" / "scalable" / "apps" / "njupt-autologin.svg"
+        icon.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(ROOT / "src" / "njupt_autologin" / "app-icon.svg", icon)
+        icon.chmod(0o644)
 
         _write(
             tree / "usr" / "share" / "applications" / "njupt-autologin.desktop",
@@ -75,7 +79,7 @@ def build(output_dir: Path) -> Path:
             "Name[zh_CN]=NJUPT 校园网自动登录\n"
             "Comment=Configure campus login and startup service\n"
             "Exec=/usr/bin/njupt-autologin-gui\n"
-            "Icon=network-wired\n"
+            "Icon=njupt-autologin\n"
             "Terminal=false\n"
             "Categories=Network;\n",
         )

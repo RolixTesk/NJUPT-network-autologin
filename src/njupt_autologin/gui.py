@@ -110,7 +110,29 @@ class ControlPanel:
             "platform": sys.platform,
         }
 
+    def _login_now(
+        self, payload: dict[str, Any], credentials: Credentials | None = None
+    ) -> str:
+        online_interface = CampusClient.online_campus_interface()
+        if online_interface:
+            return f"校园网已经在线（接口 {online_interface}），未重复提交登录。"
+        interface = str(payload.get("interface", "auto")).strip()
+        client = CampusClient(interface=interface, prefer_portal=True)
+        current = client.probe()
+        if current.state == "internet_ok":
+            return f"网络已经在线（接口 {client.interface}），未重复提交登录。"
+        if current.state != "portal_detected":
+            raise NetworkError(f"cannot authenticate from state {current.state}")
+        credentials = credentials or self._credentials(payload)
+        result = client.login(credentials)
+        if result == "login_success":
+            save_credentials(credentials)
+            return f"校园网登录成功（接口 {client.interface}）。"
+        return f"校园网已经在线（接口 {client.interface}）。"
+
     def run(self, action: str, payload: dict[str, Any]) -> str:
+        if action == "login":
+            return self._login_now(payload)
         if action == "save":
             save_credentials(self._credentials(payload))
             return "登录信息已保存。"
@@ -120,7 +142,11 @@ class ControlPanel:
             save_credentials(credentials)
             enable_linger()
             install_service(interface)
-            return "开机自启服务已安装并启用。"
+            try:
+                login_message = self._login_now(payload, credentials)
+            except EXPECTED_ERRORS as exc:
+                raise ServiceError(f"服务已安装，但立即登录失败：{exc}") from exc
+            return "开机自启服务已安装并启用；已立即执行连接检查：" + login_message
         if action == "uninstall":
             uninstall_service(remove_credentials=payload.get("remove_credentials") is True)
             return "开机自启服务已卸载。"
@@ -145,6 +171,7 @@ class ControlPanelServer(ThreadingHTTPServer):
         self.csrf_token = secrets.token_urlsafe(32)
         self.csp_nonce = secrets.token_urlsafe(18)
         template = resources.files("njupt_autologin").joinpath("webui.html").read_text(encoding="utf-8")
+        self.icon = resources.files("njupt_autologin").joinpath("app-icon.svg").read_bytes()
         self.index = (
             template.replace("__CSRF_TOKEN__", json.dumps(self.csrf_token))
             .replace("__CSP_NONCE__", self.csp_nonce)
@@ -176,7 +203,7 @@ class ControlPanelHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Security-Policy", (
             "default-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; "
             f"style-src 'nonce-{self.server.csp_nonce}'; script-src 'nonce-{self.server.csp_nonce}'; "
-            "connect-src 'self'"
+            "connect-src 'self'; img-src 'self'"
         ))
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("X-Content-Type-Options", "nosniff")
@@ -207,8 +234,8 @@ class ControlPanelHandler(BaseHTTPRequestHandler):
         if path == "/api/state":
             self._json(HTTPStatus.OK, {"ok": True, "state": self.server.panel.state()})
             return
-        if path == "/favicon.ico":
-            self._bytes(HTTPStatus.NO_CONTENT, b"", "image/x-icon")
+        if path in ("/app-icon.svg", "/favicon.ico"):
+            self._bytes(HTTPStatus.OK, self.server.icon, "image/svg+xml")
             return
         self._json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "not found"})
 

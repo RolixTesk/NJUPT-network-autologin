@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">NJUPT 校园网自动登录</title>
+  <desc id="desc">融合盾形校徽、展开书页、网络节点和无线信号的蓝紫色应用图标</desc>
+  <defs>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="14" stdDeviation="18" flood-color="#102453" flood-opacity="0.28"/>
+    </filter>
+  </defs>
+  <rect x="20" y="20" width="472" height="472" rx="112" fill="#2449A8"/>
+  <path d="M20 286V132C20 70 70 20 132 20h248c62 0 112 50 112 112v42C375 155 211 192 20 286Z" fill="#7048C4" fill-opacity="0.55"/>
+  <circle cx="256" cy="222" r="164" fill="none" stroke="#FFFFFF" stroke-opacity="0.12" stroke-width="2"/>
+  <circle cx="256" cy="222" r="138" fill="none" stroke="#FFFFFF" stroke-opacity="0.08" stroke-width="2"/>
+  <path d="M256 80 390 132v116c0 84-52 137-134 176-82-39-134-92-134-176V132L256 80Z" fill="#314A9B" stroke="#FFFFFF" stroke-opacity="0.72" stroke-width="7" filter="url(#shadow)"/>
+
+  <g fill="none" stroke="#FFFFFF" stroke-linecap="round">
+    <path d="M205 158a72 72 0 0 1 102 0" stroke-width="12" opacity="0.48"/>
+    <path d="M225 181a44 44 0 0 1 62 0" stroke-width="11" opacity="0.72"/>
+    <path d="M246 203a14 14 0 0 1 20 0" stroke-width="10"/>
+  </g>
+
+  <g fill="#FFFFFF">
+    <circle cx="256" cy="218" r="11"/>
+    <circle cx="177" cy="285" r="9" opacity="0.9"/>
+    <circle cx="335" cy="285" r="9" opacity="0.9"/>
+  </g>
+  <g fill="none" stroke="#FFFFFF" stroke-width="9" stroke-linejoin="round" stroke-linecap="round">
+    <path d="M256 250c-25-26-59-38-100-36v101c42-1 75 12 100 38V250Z" fill="#FFFFFF" fill-opacity="0.16"/>
+    <path d="M256 250c25-26 59-38 100-36v101c-42-1-75 12-100 38V250Z" fill="#FFFFFF" fill-opacity="0.16"/>
+    <path d="m177 285 45-18 34 36 34-36 45 18" opacity="0.88"/>
+  </g>
+
+  <rect x="92" y="382" width="328" height="76" rx="38" fill="#102A65" fill-opacity="0.72" stroke="#FFFFFF" stroke-opacity="0.28"/>
+  <text x="256" y="431" text-anchor="middle" fill="#FFFFFF" font-family="Arial, Helvetica, sans-serif" font-size="42" font-weight="800">NJUPT</text>
+</svg>

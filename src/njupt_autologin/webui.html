@@ -3,132 +3,198 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#2449a8">
+  <link rel="icon" href="/app-icon.svg" type="image/svg+xml">
   <title>NJUPT 校园网自动登录</title>
   <style nonce="__CSP_NONCE__">
-    :root { color-scheme: light; font-family: system-ui,-apple-system,"Segoe UI",sans-serif; background:#f4f7fb; color:#172033; }
+    :root {
+      color-scheme: light;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+      color:#17213b; background:#edf2fb; --blue:#2449a8; --purple:#7048c4; --line:#dce4f2;
+    }
     * { box-sizing:border-box; }
-    body { margin:0; min-height:100vh; display:grid; place-items:center; padding:24px; }
-    main { width:min(720px,100%); background:#fff; border:1px solid #dce3ee; border-radius:18px; box-shadow:0 18px 50px #18315318; overflow:hidden; }
-    header { padding:24px 28px 20px; background:linear-gradient(135deg,#173b6c,#2563a6); color:#fff; }
-    h1 { margin:0 0 6px; font-size:1.45rem; }
-    header p { margin:0; opacity:.82; }
-    section { padding:24px 28px; border-top:1px solid #edf0f5; }
-    section:first-of-type { border-top:0; }
-    h2 { margin:0 0 16px; font-size:1.05rem; }
-    .grid { display:grid; grid-template-columns:140px 1fr; gap:12px 16px; align-items:center; }
-    label { font-weight:600; }
-    input,select { width:100%; border:1px solid #bac5d5; border-radius:9px; padding:10px 12px; font:inherit; color:inherit; background:#fff; }
-    input:focus,select:focus { outline:3px solid #2c70bf25; border-color:#2c70bf; }
-    .hint { grid-column:2; margin:-4px 0 4px; color:#5d6878; font-size:.88rem; }
-    .actions { display:flex; flex-wrap:wrap; gap:10px; margin-top:18px; }
-    button { border:0; border-radius:9px; padding:10px 15px; font:inherit; font-weight:600; cursor:pointer; background:#e8edf4; color:#233047; }
-    button.primary { background:#1769aa; color:#fff; }
-    button.danger { background:#a83636; color:#fff; }
-    button:disabled { opacity:.5; cursor:wait; }
-    .status { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; }
-    .card { background:#f5f8fc; border:1px solid #e1e7f0; border-radius:10px; padding:13px; }
-    .card small { display:block; color:#657184; margin-bottom:5px; }
-    .card strong { overflow-wrap:anywhere; }
-    #notice { min-height:22px; margin:14px 0 0; color:#17623a; }
-    #notice.error { color:#a12626; }
-    .check { display:flex; gap:8px; align-items:center; margin-top:14px; font-weight:400; }
-    .check input { width:auto; }
-    footer { padding:16px 28px 22px; color:#687386; font-size:.84rem; }
-    @media (max-width:580px) { body{padding:0} main{border-radius:0;min-height:100vh}.grid{grid-template-columns:1fr}.hint{grid-column:1}.status{grid-template-columns:1fr} }
+    body { margin:0; min-height:100vh; background:radial-gradient(circle at 12% 0,#ded9ff 0,transparent 34%),linear-gradient(155deg,#f7f9fd 0,#eaf0fa 100%); }
+    button,input,select { font:inherit; }
+    button { border:0; cursor:pointer; }
+    .app { width:min(1040px,calc(100% - 32px)); margin:0 auto; padding:28px 0 40px; }
+    .topbar { display:flex; justify-content:space-between; align-items:center; gap:18px; margin-bottom:20px; }
+    .brand { display:flex; align-items:center; gap:13px; }
+    .brand img { width:54px; height:54px; border-radius:15px; box-shadow:0 10px 24px #2449a82f; }
+    .brand strong { display:block; font-size:1.02rem; letter-spacing:.01em; }
+    .brand span { display:block; margin-top:3px; color:#68748a; font-size:.82rem; }
+    .local-badge { display:flex; align-items:center; gap:8px; padding:8px 12px; border:1px solid #cfd9e9; border-radius:999px; background:#ffffffb8; color:#536079; font-size:.82rem; backdrop-filter:blur(10px); }
+    .local-badge::before { content:""; width:8px; height:8px; border-radius:50%; background:#29a36a; box-shadow:0 0 0 4px #29a36a18; }
+    .hero { position:relative; overflow:hidden; display:grid; grid-template-columns:1fr auto; align-items:center; gap:32px; min-height:242px; padding:42px 46px; border-radius:28px; color:#fff; background:linear-gradient(130deg,#263b91 0,#3853b6 48%,#7048c4 100%); box-shadow:0 24px 55px #263b9135; }
+    .hero::after { content:""; position:absolute; width:340px; height:340px; right:-110px; top:-180px; border:74px solid #ffffff12; border-radius:50%; }
+    .eyebrow { margin:0 0 11px; color:#d9e3ff; font-size:.78rem; font-weight:750; letter-spacing:.13em; text-transform:uppercase; }
+    h1 { margin:0; font-size:clamp(1.75rem,4vw,2.8rem); line-height:1.12; letter-spacing:-.035em; }
+    .hero-copy { position:relative; z-index:1; max-width:630px; }
+    .hero-copy > p:last-child { margin:16px 0 0; max-width:570px; color:#e3e8ff; line-height:1.72; }
+    .connect-button { position:relative; z-index:1; min-width:190px; padding:17px 22px; border-radius:16px; background:#fff; color:#263d98; font-weight:800; box-shadow:0 14px 30px #10235f48; transition:transform .16s,box-shadow .16s; }
+    .connect-button:hover { transform:translateY(-2px); box-shadow:0 18px 34px #10235f55; }
+    .connect-button small { display:block; margin-top:4px; color:#7480a5; font-weight:550; }
+    .layout { display:grid; grid-template-columns:minmax(0,1.25fr) minmax(300px,.75fr); gap:18px; margin-top:18px; }
+    .panel { background:#ffffffed; border:1px solid #dce4f2; border-radius:22px; padding:25px; box-shadow:0 10px 28px #25416d0d; backdrop-filter:blur(12px); }
+    .panel-heading { display:flex; justify-content:space-between; align-items:flex-start; gap:16px; margin-bottom:21px; }
+    h2 { margin:0; font-size:1.08rem; }
+    .panel-heading p { margin:6px 0 0; color:#728096; font-size:.86rem; }
+    .saved-pill { padding:6px 9px; border-radius:999px; background:#eef3fb; color:#60708b; font-size:.75rem; white-space:nowrap; }
+    .form-grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+    .field { display:grid; gap:7px; }
+    .field.full { grid-column:1/-1; }
+    label { font-size:.82rem; font-weight:700; color:#4c5870; }
+    input,select { width:100%; min-height:46px; padding:10px 12px; color:#17213b; background:#f9fbfe; border:1px solid #cbd6e7; border-radius:12px; transition:border .15s,box-shadow .15s,background .15s; }
+    input:focus,select:focus { outline:0; border-color:#526fd0; background:#fff; box-shadow:0 0 0 4px #526fd018; }
+    .hint { margin:0; color:#7a8699; font-size:.78rem; line-height:1.5; }
+    .actions { display:flex; flex-wrap:wrap; gap:9px; margin-top:20px; }
+    .button { min-height:42px; padding:10px 14px; border-radius:11px; background:#eef2f8; color:#344057; font-weight:700; transition:background .15s,transform .15s; }
+    .button:hover { background:#e2e8f2; transform:translateY(-1px); }
+    .button.primary { background:#294ba6; color:#fff; }
+    .button.primary:hover { background:#203d8c; }
+    .button.danger { color:#a33547; background:#fff0f2; }
+    .button:disabled,.connect-button:disabled { opacity:.5; cursor:wait; transform:none; }
+    .status-list { display:grid; gap:10px; }
+    .status-row { display:flex; align-items:center; justify-content:space-between; gap:16px; min-height:55px; padding:11px 13px; border:1px solid #e2e8f2; border-radius:13px; background:#f8fafd; }
+    .status-label { display:flex; align-items:center; gap:10px; color:#566278; font-size:.86rem; }
+    .status-label i { width:10px; height:10px; border-radius:50%; background:#aab5c7; box-shadow:0 0 0 4px #aab5c71c; }
+    .status-row.good .status-label i { background:#27a468; box-shadow:0 0 0 4px #27a4681c; }
+    .status-row strong { font-size:.86rem; text-align:right; }
+    .check { display:flex; align-items:flex-start; gap:9px; margin:17px 0 0; color:#626f84; font-size:.81rem; line-height:1.45; }
+    .check input { width:16px; min-height:16px; margin-top:1px; accent-color:#294ba6; }
+    .notice { display:none; margin:18px 0 0; padding:12px 14px; border-radius:12px; background:#edf8f2; color:#237147; font-size:.86rem; line-height:1.5; }
+    .notice.show { display:block; }
+    .notice.error { background:#fff0f1; color:#a33547; }
+    footer { display:flex; justify-content:space-between; gap:14px; padding:19px 4px 0; color:#7a8699; font-size:.78rem; }
+    @media (max-width:760px) {
+      .app { width:min(100% - 20px,620px); padding-top:16px; }
+      .hero { grid-template-columns:1fr; padding:32px 26px; border-radius:22px; }
+      .connect-button { width:100%; }
+      .layout { grid-template-columns:1fr; }
+      .form-grid { grid-template-columns:1fr; }
+      .field.full { grid-column:auto; }
+      footer { flex-direction:column; }
+    }
+    @media (max-width:450px) { .local-badge{display:none}.panel{padding:20px}.brand img{width:48px;height:48px} }
   </style>
 </head>
 <body>
-<main>
-  <header>
-    <h1>NJUPT 校园网自动登录</h1>
-    <p>本机控制面板 · 仅监听 127.0.0.1</p>
-  </header>
-  <section>
-    <h2>登录信息</h2>
-    <div class="grid">
-      <label for="username">账号</label>
-      <input id="username" autocomplete="username" spellcheck="false">
-      <label for="password">密码</label>
-      <input id="password" type="password" autocomplete="current-password">
-      <div class="hint">已有配置时密码留空会沿用原密码。</div>
-      <label for="operator">运营商</label>
-      <select id="operator">
-        <option value="campus">校园网</option>
-        <option value="telecom">中国电信</option>
-        <option value="mobile">中国移动</option>
-      </select>
-      <label for="interface">校园网接口</label>
-      <input id="interface" value="auto" spellcheck="false">
-      <div class="hint">填写 auto 可根据默认路由与 Portal 状态自动选择。</div>
-    </div>
-    <div class="actions">
-      <button class="primary" data-action="save">保存登录信息</button>
-      <button class="primary" data-action="install">安装并启用开机自启</button>
-      <button data-action="logout">注销当前校园网会话</button>
-    </div>
-  </section>
-  <section>
-    <h2>服务状态</h2>
-    <div class="status">
-      <div class="card"><small>安装</small><strong id="installed">读取中…</strong></div>
-      <div class="card"><small>定时器</small><strong id="timer">读取中…</strong></div>
-      <div class="card"><small>开机用户服务</small><strong id="linger">读取中…</strong></div>
-    </div>
-    <label class="check"><input id="removeCredentials" type="checkbox">卸载时删除保存的登录信息</label>
-    <div class="actions">
-      <button class="danger" data-action="uninstall">卸载开机自启服务</button>
-      <button data-action="refresh">刷新状态</button>
-      <button data-action="shutdown">关闭控制面板</button>
-    </div>
-    <p id="notice" role="status" aria-live="polite"></p>
-  </section>
-  <footer>凭据保存在当前用户的私有配置目录中，不会发送给此计算机以外的控制面板服务。</footer>
-</main>
-<script nonce="__CSP_NONCE__">
-  const csrfToken = __CSRF_TOKEN__;
-  const byId = id => document.getElementById(id);
-  const buttons = [...document.querySelectorAll('button[data-action]')];
-  function setBusy(value) { buttons.forEach(button => button.disabled = value); }
-  function notice(message, error=false) { const node=byId('notice'); node.textContent=message; node.classList.toggle('error',error); }
-  function formPayload() {
-    return {
-      username: byId('username').value.trim(), password: byId('password').value,
-      operator: byId('operator').value, interface: byId('interface').value.trim(),
-      remove_credentials: byId('removeCredentials').checked
-    };
-  }
-  function render(state) {
-    const credentials=state.credentials, service=state.service;
-    if (credentials.exists && !byId('username').value) byId('username').value=credentials.username;
-    if (credentials.exists) byId('operator').value=credentials.operator;
-    byId('installed').textContent=service.supported ? (service.installed?'已安装':'未安装') : '当前平台待适配';
-    byId('timer').textContent=service.error ? '状态不可用' : (service.enabled?(service.active?'已启用并运行':'已启用，当前停止'):'未启用');
-    byId('linger').textContent=service.supported ? (service.linger?'已启用':'未启用') : '不适用';
-    if (service.error) notice(service.error,true);
-  }
-  async function state() {
-    setBusy(true);
-    try { const response=await fetch('/api/state',{cache:'no-store'}); const data=await response.json(); render(data.state); }
-    catch (_) { notice('无法读取本地服务状态。',true); }
-    finally { setBusy(false); }
-  }
-  async function action(name) {
-    if (name==='refresh') { await state(); return; }
-    if (name==='logout' && !confirm('确定注销当前校园网会话吗？自动登录定时器将暂停。')) return;
-    if (name==='uninstall' && !confirm('确定停用并卸载自动登录服务吗？')) return;
-    setBusy(true); notice('正在处理…');
-    try {
-      const response=await fetch('/api/'+name,{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':csrfToken},body:JSON.stringify(formPayload())});
-      const data=await response.json();
-      if (!response.ok || !data.ok) throw new Error(data.error || '操作失败');
-      notice(data.message); byId('password').value='';
-      if (name==='shutdown') { document.body.innerHTML='<main><section><h2>控制面板已关闭</h2><p>现在可以关闭此标签页。</p></section></main>'; return; }
-      render(data.state);
-    } catch (error) { notice(error.message || '操作失败',true); }
-    finally { setBusy(false); }
-  }
-  buttons.forEach(button => button.addEventListener('click',()=>action(button.dataset.action)));
-  state();
-</script>
+  <div class="app">
+    <nav class="topbar" aria-label="应用信息">
+      <div class="brand">
+        <img src="/app-icon.svg" alt="NJUPT 校园网图标">
+        <div><strong>NJUPT Auto Login</strong><span>校园网连接与自启管理</span></div>
+      </div>
+      <div class="local-badge">本机安全连接</div>
+    </nav>
+
+    <header class="hero">
+      <div class="hero-copy">
+        <p class="eyebrow">Campus network</p>
+        <h1>随时恢复校园网连接</h1>
+        <p>自启服务未及时运行或刚完成安装时，可立即检查接口并登录。已在线时不会重复认证，也不会额外占用设备名额。</p>
+      </div>
+      <button class="connect-button" data-action="login">立即登录校园网<small>安全检查后执行</small></button>
+    </header>
+
+    <main class="layout">
+      <section class="panel">
+        <div class="panel-heading">
+          <div><h2>登录配置</h2><p>填写账号并选择校园网出口。</p></div>
+          <span class="saved-pill" id="savedState">读取配置…</span>
+        </div>
+        <div class="form-grid">
+          <div class="field">
+            <label for="username">账号</label>
+            <input id="username" autocomplete="username" spellcheck="false" placeholder="校园网账号">
+          </div>
+          <div class="field">
+            <label for="password">密码</label>
+            <input id="password" type="password" autocomplete="current-password" placeholder="留空沿用已保存密码">
+          </div>
+          <div class="field">
+            <label for="operator">运营商</label>
+            <select id="operator">
+              <option value="campus">校园网</option>
+              <option value="telecom">中国电信</option>
+              <option value="mobile">中国移动</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="interface">校园网接口</label>
+            <input id="interface" value="auto" spellcheck="false">
+          </div>
+          <p class="hint field full">使用 auto 会从默认路由中识别校园网接口。立即登录成功后会保存本次登录信息。</p>
+        </div>
+        <div class="actions">
+          <button class="button primary" data-action="save">保存登录信息</button>
+          <button class="button" data-action="install">安装并启用自启</button>
+          <button class="button" data-action="logout">注销当前会话</button>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-heading">
+          <div><h2>自启服务</h2><p>用户级 systemd timer</p></div>
+          <button class="button" data-action="refresh">刷新</button>
+        </div>
+        <div class="status-list">
+          <div class="status-row" id="installedRow"><span class="status-label"><i></i>服务配置</span><strong id="installed">读取中…</strong></div>
+          <div class="status-row" id="timerRow"><span class="status-label"><i></i>定时检查</span><strong id="timer">读取中…</strong></div>
+          <div class="status-row" id="lingerRow"><span class="status-label"><i></i>开机运行</span><strong id="linger">读取中…</strong></div>
+        </div>
+        <label class="check"><input id="removeCredentials" type="checkbox">卸载服务时同时删除当前用户保存的登录信息</label>
+        <div class="actions">
+          <button class="button danger" data-action="uninstall">卸载自启服务</button>
+          <button class="button" data-action="shutdown">关闭控制面板</button>
+        </div>
+        <p class="notice" id="notice" role="status" aria-live="polite"></p>
+      </section>
+    </main>
+    <footer><span>仅监听 127.0.0.1 · 密码不会在状态接口中返回</span><span id="platform">正在读取平台信息</span></footer>
+  </div>
+
+  <script nonce="__CSP_NONCE__">
+    const csrfToken=__CSRF_TOKEN__;
+    const byId=id=>document.getElementById(id);
+    const buttons=[...document.querySelectorAll('button[data-action]')];
+    const setBusy=value=>buttons.forEach(button=>button.disabled=value);
+    function notice(message,error=false){const node=byId('notice');node.textContent=message;node.classList.toggle('error',error);node.classList.toggle('show',Boolean(message));}
+    function mark(row,good){byId(row).classList.toggle('good',good);}
+    function payload(){return{username:byId('username').value.trim(),password:byId('password').value,operator:byId('operator').value,interface:byId('interface').value.trim(),remove_credentials:byId('removeCredentials').checked};}
+    function render(state){
+      const credentials=state.credentials,service=state.service;
+      if(credentials.exists&&!byId('username').value)byId('username').value=credentials.username;
+      if(credentials.exists)byId('operator').value=credentials.operator;
+      byId('savedState').textContent=credentials.exists?'已保存配置':'尚未保存';
+      byId('installed').textContent=service.supported?(service.installed?'已配置':'未配置'):'当前平台待适配';
+      byId('timer').textContent=service.error?'状态不可用':(service.enabled?(service.active?'已启用并运行':'已启用，当前停止'):'未启用');
+      byId('linger').textContent=service.supported?(service.linger?'已启用':'未启用'):'不适用';
+      byId('platform').textContent='平台：'+state.platform;
+      mark('installedRow',service.installed);mark('timerRow',service.enabled&&service.active);mark('lingerRow',service.linger);
+      if(service.error)notice(service.error,true);
+    }
+    async function loadState(silent=false){
+      if(!silent)setBusy(true);
+      try{const response=await fetch('/api/state',{cache:'no-store'});const data=await response.json();render(data.state);}
+      catch(_){notice('无法读取本地服务状态。',true);}
+      finally{if(!silent)setBusy(false);}
+    }
+    async function action(name){
+      if(name==='refresh'){await loadState();return;}
+      if(name==='logout'&&!confirm('确定注销当前校园网会话吗？自动登录定时器将暂停。'))return;
+      if(name==='uninstall'&&!confirm('确定停用并卸载自动登录服务吗？'))return;
+      setBusy(true);notice(name==='login'?'正在检查网络并登录…':'正在处理…');
+      try{
+        const response=await fetch('/api/'+name,{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':csrfToken},body:JSON.stringify(payload())});
+        const data=await response.json();if(!response.ok||!data.ok)throw new Error(data.error||'操作失败');
+        notice(data.message);byId('password').value='';
+        if(name==='shutdown'){document.body.innerHTML='<div class="app"><section class="panel"><h2>控制面板已关闭</h2><p>现在可以关闭此标签页。</p></section></div>';return;}
+        render(data.state);
+      }catch(error){notice(error.message||'操作失败',true);await loadState(true);}
+      finally{setBusy(false);}
+    }
+    buttons.forEach(button=>button.addEventListener('click',()=>action(button.dataset.action)));
+    loadState();
+  </script>
 </body>
 </html>
