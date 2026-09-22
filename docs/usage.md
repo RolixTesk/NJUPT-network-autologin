@@ -30,7 +30,7 @@ Portal 网页自身的注销按钮当前不可作为可靠替代。现场测试�
 
 ## 安装与配置
 
-要求 Linux、Python 3.10+、`iproute2` 与 systemd 用户管理器。代码本身只使用 Python 标准库。在源码目录执行：
+要求 Linux、Python 3.10+、`iproute2` 与 systemd 用户管理器。GUI 还需要发行版提供的 Tk 绑定（Debian/Ubuntu 软件包名为 `python3-tk`）；项目不依赖第三方 Python 包。在源码目录执行：
 
 ```bash
 python3 -m pip install --user .
@@ -53,10 +53,10 @@ printf '%s\n' '{"username":"example","password":"example","operator":"mobile"}' 
 
 ```bash
 python3 packaging/debian/build_deb.py
-sudo apt install ./dist/njupt-autologin_0.7.0_all.deb
+sudo apt install ./dist/njupt-autologin_0.7.1_all.deb
 ```
 
-软件包安装 CLI、本地 Web GUI、桌面菜单入口以及 systemd 用户服务和定时器。`apt` 会处理 `python3`、`iproute2`、`systemd` 和 `pkexec` 前置依赖，并推荐安装用于打开默认浏览器的 `xdg-utils`。安装后可以通过 GUI 配置并启用服务，也可以直接执行：
+软件包安装 CLI、原生桌面 GUI、桌面菜单入口以及 systemd 用户服务和定时器。`apt` 会自动处理 `python3`、`python3-tk`、`iproute2`、`systemd` 和 `pkexec` 前置依赖。安装后可以通过 GUI 配置并启用服务，也可以直接执行：
 
 ```bash
 njupt-autologin configure
@@ -92,27 +92,21 @@ journalctl --user -u njupt-autologin.service -n 20 --no-pager
 
 ## 图形界面
 
-图形界面使用 Python 标准库在 `127.0.0.1` 上启动临时控制面板，并调用系统默认浏览器，不依赖 Tkinter 或第三方 Python 包：
+图形界面是小巧的原生 Tk 窗口，使用系统控件和定制 `ttk` 主题，不启动本地 HTTP 服务，也不需要浏览器或第三方 Python 包：
 
 ```bash
 njupt-autologin-gui
-```
-
-若当前环境无法自动打开浏览器，可以让程序只打印随机本地端口，再手动打开该地址：
-
-```bash
-njupt-autologin-gui --no-browser
 ```
 
 若用户级脚本目录尚未进入当前会话的 `PATH`，可直接运行 `~/.local/bin/njupt-autologin-gui`，或重新登录桌面后再启动。
 
 界面支持输入校园网账号和密码、选择运营商和网卡、立即登录、保存登录信息、安装并启用开机自启服务、注销当前校园网会话、查看服务状态以及卸载服务。接口默认为 `auto`；密码输入框会遮蔽内容，已保存凭据存在时留空表示沿用原密码。
 
-“立即登录校园网”会先检查是否已有 NJUPT 在线会话，已在线时直接返回；需要认证时才读取表单或已保存的密码，并在成功后保存登录信息。“安装并启用开机自启”会在完成服务安装后立即执行同一登录流程，避免首次安装后等待 timer。控制面板只接受回环 Host 和 Origin，修改请求需要启动时生成的随机令牌，并限制请求体大小；响应不会返回密码。
+“立即登录校园网”会先检查是否已有 NJUPT 在线会话，已在线时直接返回；需要认证时才读取表单或已保存的密码，并在成功后保存登录信息。“安装并启用开机自启”会在完成服务安装后立即执行同一登录流程，避免首次安装后等待 timer。网络与服务操作在后台线程执行，窗口不会因请求而停止响应。
 
 安装自启时会同时检查 linger。若尚未启用，界面通过系统的 `pkexec` 权限对话框执行 `loginctl enable-linger`。卸载默认保留登录信息；只有勾选“卸载时同时删除保存的登录信息”才会删除凭据。卸载不会关闭 linger，因为当前用户的其他服务也可能依赖它。
 
-页面、HTTP 控制协议和凭据表单不依赖 Linux 桌面组件，可以在后续 Windows 版本中复用。当前校园网接口探测和开机服务后端仍使用 Linux 的 `iproute2` 与 systemd，Windows 版本需提供对应的网络接口和服务管理实现。
+Tk 界面层可在后续 Windows 版本中直接复用，Windows 官方 Python 安装通常包含 Tk 运行时。当前校园网接口探测和开机服务后端仍使用 Linux 的 `iproute2` 与 systemd，Windows 版本需提供对应的网络接口和服务管理实现。
 
 命令行也可以卸载服务：
 

@@ -1,157 +1,402 @@
-"""Dependency-free local web control panel for credentials and service management."""
+"""Compact native desktop UI for credentials and startup service management."""
 
 from __future__ import annotations
 
-import argparse
-import hmac
 import json
-import secrets
+import queue
 import sys
 import threading
-import webbrowser
-from http import HTTPStatus
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import tkinter as tk
+from collections.abc import Callable
 from importlib import resources
-from typing import Any
-from urllib.parse import urlsplit
+from tkinter import messagebox, ttk
 
 from .client import AuthenticationError, CampusClient, NetworkError, PortalError
 from .credentials import CredentialError, Credentials, default_path, load_credentials, save_credentials
+from .gui_actions import login_now, service_status_items
 from .service import (
-    ServiceError,
-    enable_linger,
-    install_service,
-    pause_service,
-    resume_service,
-    service_status,
-    uninstall_service,
+    ServiceError, ServiceStatus, enable_linger, install_service, pause_service,
+    resume_service, service_status, uninstall_service,
 )
 
-
-LOOPBACK_HOSTS = {"127.0.0.1", "localhost"}
-MAX_BODY = 16_384
-EXPECTED_ERRORS = (
-    AuthenticationError,
-    CredentialError,
-    NetworkError,
-    PortalError,
-    ServiceError,
-    OSError,
-    ValueError,
-    json.JSONDecodeError,
-)
-OPERATOR_KEYS = {
-    "campus": "campus",
-    "校园网": "campus",
-    "校园用户": "campus",
-    "telecom": "telecom",
-    "中国电信": "telecom",
-    "电信": "telecom",
-    "@njxy": "telecom",
-    "mobile": "mobile",
-    "中国移动": "mobile",
-    "移动": "mobile",
-    "@cmcc": "mobile",
+OPERATORS = {"校园网": "campus", "中国电信": "telecom", "中国移动": "mobile"}
+OPERATOR_LABELS = {
+    "campus": "校园网", "校园网": "校园网", "校园用户": "校园网",
+    "telecom": "中国电信", "电信": "中国电信", "中国电信": "中国电信", "@njxy": "中国电信",
+    "mobile": "中国移动", "移动": "中国移动", "中国移动": "中国移动", "@cmcc": "中国移动",
 }
 
+BG, SURFACE, FIELD = "#F2F5FA", "#FFFFFF", "#F8FAFD"
+PRIMARY, PRIMARY_HOVER = "#3154B4", "#27479F"
+TEXT, MUTED, BORDER = "#17213B", "#68758C", "#D8E0EC"
+SUCCESS, WARNING, DANGER = "#23875B", "#B57916", "#B13C4C"
+EXPECTED_ERRORS = (
+    AuthenticationError, CredentialError, NetworkError, PortalError,
+    ServiceError, OSError, ValueError, json.JSONDecodeError,
+)
 
-def _operator_key(value: str) -> str:
-    return OPERATOR_KEYS.get(value.strip().lower(), "mobile")
+
+def _set_windows_dpi_awareness() -> None:
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)
+    except (AttributeError, OSError):
+        pass
 
 
-class ControlPanel:
-    """Platform-neutral actions exposed to the local browser UI."""
+class App:
+    def __init__(self, root: tk.Tk) -> None:
+        self.root = root
+        root.title("NJUPT 校园网自动登录")
+        root.configure(background=BG)
+        root.resizable(False, False)
+        root.option_add("*tearOff", False)
+        self.username = tk.StringVar()
+        self.password = tk.StringVar()
+        self.operator = tk.StringVar(value="中国移动")
+        self.interface = tk.StringVar(value="auto")
+        self.remove_credentials = tk.BooleanVar(value=False)
+        self.operation_text = tk.StringVar(value="就绪，可以立即检查并连接校园网。")
+        self.buttons: list[ttk.Button] = []
+        self.status_values: list[tk.Label] = []
+        self.icon_image: tk.PhotoImage | None = None
+        self.header_icon: tk.PhotoImage | None = None
+        self._configure_style()
+        self._build()
+        self._load_existing()
+        root.update_idletasks()
+        self._center_window()
+        self.refresh_status()
+
+    def _configure_style(self) -> None:
+        style = ttk.Style(self.root)
+        if "clam" in style.theme_names():
+            style.theme_use("clam")
+        self.font_family = "Segoe UI" if sys.platform == "win32" else "Noto Sans CJK SC"
+        self.root.option_add("*Font", (self.font_family, 10))
+        style.configure("App.TFrame", background=BG)
+        style.configure("Card.TFrame", background=SURFACE)
+        style.configure("Card.TLabel", background=SURFACE, foreground=TEXT)
+        style.configure("Muted.TLabel", background=SURFACE, foreground=MUTED)
+        style.configure("Section.TLabel", background=SURFACE, foreground=TEXT, font=(self.font_family, 11, "bold"))
+        style.configure(
+            "Modern.TEntry", padding=(9, 6), fieldbackground=FIELD, foreground=TEXT,
+            bordercolor=BORDER, lightcolor=BORDER, darkcolor=BORDER, insertcolor=TEXT,
+        )
+        style.map("Modern.TEntry", bordercolor=[("focus", PRIMARY)])
+        style.configure(
+            "Modern.TCombobox", padding=(9, 5), fieldbackground=FIELD, foreground=TEXT,
+            bordercolor=BORDER, lightcolor=BORDER, darkcolor=BORDER, arrowcolor=PRIMARY,
+        )
+        style.map(
+            "Modern.TCombobox", fieldbackground=[("readonly", FIELD)],
+            foreground=[("readonly", TEXT)], bordercolor=[("focus", PRIMARY)],
+        )
+        style.configure(
+            "Primary.TButton", background=PRIMARY, foreground="#FFFFFF", borderwidth=0,
+            padding=(18, 9), font=(self.font_family, 10, "bold"),
+        )
+        style.map(
+            "Primary.TButton",
+            background=[("active", PRIMARY_HOVER), ("pressed", "#203C8B"), ("disabled", "#AAB7D5")],
+            foreground=[("disabled", "#F3F5FA")],
+        )
+        style.configure(
+            "Secondary.TButton", background="#E9EEF8", foreground=PRIMARY,
+            borderwidth=0, padding=(14, 7), font=(self.font_family, 9, "bold"),
+        )
+        style.map("Secondary.TButton", background=[("active", "#DAE3F4"), ("disabled", "#EEF1F6")])
+        style.configure(
+            "Quiet.TButton", background=SURFACE, foreground=TEXT, borderwidth=1,
+            bordercolor=BORDER, lightcolor=BORDER, darkcolor=BORDER, padding=(13, 6),
+        )
+        style.map("Quiet.TButton", background=[("active", FIELD), ("disabled", "#F5F6F8")])
+        style.configure("Danger.TButton", background="#FCECEF", foreground=DANGER, borderwidth=0, padding=(13, 6))
+        style.map("Danger.TButton", background=[("active", "#F7DDE2"), ("disabled", "#F5F1F2")])
+        style.configure("Modern.TCheckbutton", background=SURFACE, foreground=MUTED)
+        style.map("Modern.TCheckbutton", background=[("active", SURFACE)])
+        style.configure("Slim.Horizontal.TProgressbar", troughcolor="#DFE5F0", background=PRIMARY, borderwidth=0)
 
     @staticmethod
-    def _credentials(payload: dict[str, Any]) -> Credentials:
-        username = str(payload.get("username", "")).strip()
-        password = str(payload.get("password", ""))
-        operator = str(payload.get("operator", "")).strip()
-        if not password:
-            password = load_credentials(path=default_path()).password
-        return Credentials(username=username, password=password, operator=operator)
+    def _card(parent: tk.Misc) -> ttk.Frame:
+        border = tk.Frame(parent, background=BORDER, padx=1, pady=1)
+        content = ttk.Frame(border, style="Card.TFrame", padding=13)
+        content.pack(fill="both", expand=True)
+        return content
 
-    @staticmethod
-    def state() -> dict[str, Any]:
-        credential_state: dict[str, Any] = {"exists": False, "username": "", "operator": "mobile"}
+    def _build(self) -> None:
+        main = ttk.Frame(self.root, style="App.TFrame", padding=14)
+        main.grid(row=0, column=0, sticky="nsew")
+        main.columnconfigure(0, weight=1)
+
+        header = ttk.Frame(main, style="App.TFrame")
+        header.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        try:
+            icon_path = resources.files("njupt_autologin").joinpath("app-icon.png")
+            self.icon_image = tk.PhotoImage(file=str(icon_path))
+            self.header_icon = self.icon_image.subsample(2)
+            self.root.iconphoto(True, self.icon_image)
+            ttk.Label(header, image=self.header_icon, background=BG).grid(row=0, column=0, rowspan=2, padx=(0, 12))
+        except (OSError, tk.TclError):
+            pass
+        ttk.Label(
+            header, text="NJUPT 校园网", background=BG, foreground=TEXT,
+            font=(self.font_family, 18, "bold"),
+        ).grid(row=0, column=1, sticky="sw")
+        ttk.Label(
+            header, text="自动登录与开机服务控制", background=BG, foreground=MUTED,
+            font=(self.font_family, 9),
+        ).grid(row=1, column=1, sticky="nw")
+
+        connect = self._card(main)
+        connect.master.grid(row=1, column=0, sticky="ew", pady=(0, 8))
+        connect.columnconfigure(0, weight=1)
+        ttk.Label(connect, text="校园网连接", style="Section.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(
+            connect, text="已登录时不会重复认证，也不会额外占用设备名额。", style="Muted.TLabel",
+        ).grid(row=1, column=0, sticky="w", pady=(4, 0))
+        login_button = ttk.Button(
+            connect, text="立即登录校园网", style="Primary.TButton", command=self.immediate_login,
+        )
+        login_button.grid(row=0, column=1, rowspan=2, sticky="e", padx=(18, 0))
+        self.buttons.append(login_button)
+
+        credentials = self._card(main)
+        credentials.master.grid(row=2, column=0, sticky="ew", pady=(0, 8))
+        credentials.columnconfigure(0, weight=1)
+        credentials.columnconfigure(1, weight=1)
+        ttk.Label(credentials, text="登录配置", style="Section.TLabel").grid(
+            row=0, column=0, columnspan=2, sticky="w", pady=(0, 7)
+        )
+        self._field(credentials, "账号", self.username, 1, 0)
+        self._field(credentials, "密码", self.password, 1, 1, show="●")
+        self._field(credentials, "运营商", self.operator, 3, 0, values=tuple(OPERATORS))
+        self._field(credentials, "网络接口", self.interface, 3, 1)
+        ttk.Label(
+            credentials, text="接口使用 auto 可自动选择；密码留空时沿用已保存的密码。", style="Muted.TLabel",
+        ).grid(row=5, column=0, columnspan=2, sticky="w", pady=(5, 8))
+        save_button = ttk.Button(credentials, text="保存登录信息", style="Quiet.TButton", command=self.save)
+        install_button = ttk.Button(
+            credentials, text="安装并启用开机自启", style="Secondary.TButton", command=self.install,
+        )
+        save_button.grid(row=6, column=0, sticky="ew", padx=(0, 5))
+        install_button.grid(row=6, column=1, sticky="ew", padx=(5, 0))
+        self.buttons.extend((save_button, install_button))
+
+        status = self._card(main)
+        status.master.grid(row=3, column=0, sticky="ew")
+        for column in range(3):
+            status.columnconfigure(column, weight=1, uniform="status")
+        ttk.Label(status, text="服务状态", style="Section.TLabel").grid(row=0, column=0, sticky="w")
+        refresh_button = ttk.Button(status, text="刷新", style="Quiet.TButton", command=self.refresh_status)
+        refresh_button.grid(row=0, column=2, sticky="e")
+        self.buttons.append(refresh_button)
+        for column, label in enumerate(("自动登录服务", "定时器", "开机运行")):
+            tile = tk.Frame(status, background=FIELD, padx=12, pady=9)
+            tile.grid(
+                row=1, column=column, sticky="ew",
+                padx=(0 if column == 0 else 4, 0 if column == 2 else 4), pady=(8, 8),
+            )
+            tk.Label(tile, text=label, background=FIELD, foreground=MUTED, font=(self.font_family, 9)).pack(anchor="w")
+            value = tk.Label(
+                tile, text="读取中…", background=FIELD, foreground=MUTED,
+                font=(self.font_family, 10, "bold"),
+            )
+            value.pack(anchor="w", pady=(2, 0))
+            self.status_values.append(value)
+
+        self.operation_banner = tk.Frame(status, background="#EDF2FC", padx=12, pady=9)
+        self.operation_banner.grid(row=2, column=0, columnspan=3, sticky="ew")
+        self.operation_dot = tk.Label(
+            self.operation_banner, text="●", background="#EDF2FC", foreground=PRIMARY,
+            font=(self.font_family, 9),
+        )
+        self.operation_dot.pack(side="left", padx=(0, 7))
+        self.operation_label = tk.Label(
+            self.operation_banner, textvariable=self.operation_text, background="#EDF2FC", foreground=TEXT,
+            font=(self.font_family, 9), anchor="w", wraplength=530, justify="left",
+        )
+        self.operation_label.pack(side="left", fill="x", expand=True)
+        self.progress = ttk.Progressbar(status, mode="indeterminate", style="Slim.Horizontal.TProgressbar")
+        self.progress.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(7, 0))
+        self.progress.grid_remove()
+
+        maintenance = ttk.Frame(status, style="Card.TFrame")
+        maintenance.grid(row=4, column=0, columnspan=3, sticky="ew", pady=(8, 0))
+        maintenance.columnconfigure(0, weight=1)
+        maintenance.columnconfigure(1, weight=1)
+        logout_button = ttk.Button(
+            maintenance, text="注销当前会话", style="Quiet.TButton", command=self.logout,
+        )
+        remove_button = ttk.Button(
+            maintenance, text="卸载开机自启服务", style="Danger.TButton", command=self.uninstall,
+        )
+        logout_button.grid(row=0, column=0, sticky="ew", padx=(0, 5))
+        remove_button.grid(row=0, column=1, sticky="ew", padx=(5, 0))
+        ttk.Checkbutton(
+            maintenance, text="卸载时同时删除保存的登录信息",
+            variable=self.remove_credentials, style="Modern.TCheckbutton",
+        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        self.buttons.extend((logout_button, remove_button))
+
+    def _field(
+        self, parent: ttk.Frame, label: str, variable: tk.StringVar,
+        row: int, column: int, *, show: str | None = None,
+        values: tuple[str, ...] | None = None,
+    ) -> None:
+        padx = (0 if column == 0 else 7, 7 if column == 0 else 0)
+        ttk.Label(parent, text=label, style="Card.TLabel").grid(row=row, column=column, sticky="w", padx=padx)
+        if values is None:
+            widget: ttk.Widget = ttk.Entry(
+                parent, textvariable=variable, show=show or "", style="Modern.TEntry",
+            )
+        else:
+            widget = ttk.Combobox(
+                parent, textvariable=variable, values=values, state="readonly", style="Modern.TCombobox",
+            )
+        widget.grid(row=row + 1, column=column, sticky="ew", padx=padx, pady=(2, 5))
+
+    def _center_window(self) -> None:
+        width, height = self.root.winfo_reqwidth(), self.root.winfo_reqheight()
+        x = max(0, (self.root.winfo_screenwidth() - width) // 2)
+        y = max(0, (self.root.winfo_screenheight() - height) // 2)
+        self.root.geometry(f"{width}x{height}+{x}+{y}")
+
+    def _load_existing(self) -> None:
         try:
             credentials = load_credentials(path=default_path())
         except (CredentialError, json.JSONDecodeError, OSError):
-            pass
-        else:
-            credential_state = {
-                "exists": True,
-                "username": credentials.username,
-                "operator": _operator_key(credentials.operator),
-            }
+            return
+        self.username.set(credentials.username)
+        self.operator.set(OPERATOR_LABELS.get(credentials.operator.strip().lower(), "中国移动"))
 
-        service: dict[str, Any] = {
-            "supported": sys.platform == "linux",
-            "installed": False,
-            "enabled": False,
-            "active": False,
-            "linger": False,
-        }
-        if service["supported"]:
+    @staticmethod
+    def _credentials_from_values(username: str, password: str, operator: str) -> Credentials:
+        if not password:
             try:
-                value = service_status()
-            except ServiceError as exc:
-                service["error"] = str(exc)
+                password = load_credentials(path=default_path()).password
+            except (CredentialError, json.JSONDecodeError, OSError) as exc:
+                raise CredentialError("请输入密码") from exc
+        return Credentials(username=username.strip(), password=password, operator=OPERATORS[operator])
+
+    def _captured_credentials(self) -> tuple[str, str, str]:
+        return self.username.get(), self.password.get(), self.operator.get()
+
+    def _set_busy(self, busy: bool) -> None:
+        state = "disabled" if busy else "normal"
+        for button in self.buttons:
+            button.configure(state=state)
+        if busy:
+            self.progress.grid()
+            self.progress.start(12)
+        else:
+            self.progress.stop()
+            self.progress.grid_remove()
+
+    def _set_operation(self, message: str, kind: str = "neutral") -> None:
+        background, accent = {
+            "neutral": ("#EDF2FC", PRIMARY), "success": ("#EAF7F1", SUCCESS), "error": ("#FCECEF", DANGER),
+        }[kind]
+        self.operation_text.set(message)
+        self.operation_banner.configure(background=background)
+        self.operation_dot.configure(background=background, foreground=accent)
+        self.operation_label.configure(background=background)
+
+    def _run_async(self, action: Callable[[], str], progress_text: str) -> None:
+        self._set_busy(True)
+        self._set_operation(progress_text)
+        self._background(action, self._finish_success, self._finish_error)
+
+    def _background(
+        self, action: Callable[[], object], on_success: Callable[[object], None],
+        on_error: Callable[[str], None],
+    ) -> None:
+        results: queue.Queue[tuple[bool, object]] = queue.Queue(maxsize=1)
+
+        def worker() -> None:
+            try:
+                result = action()
+            except EXPECTED_ERRORS as exc:
+                results.put((False, str(exc)))
             else:
-                service.update(
-                    installed=value.installed,
-                    enabled=value.enabled,
-                    active=value.active,
-                    linger=value.linger,
-                )
-        return {
-            "credentials": credential_state,
-            "service": service,
-            "platform": sys.platform,
-        }
+                results.put((True, result))
 
-    def _login_now(
-        self, payload: dict[str, Any], credentials: Credentials | None = None
-    ) -> str:
-        online_interface = CampusClient.online_campus_interface()
-        if online_interface:
-            return f"校园网已经在线（接口 {online_interface}），未重复提交登录。"
-        interface = str(payload.get("interface", "auto")).strip()
-        client = CampusClient(interface=interface, prefer_portal=True)
-        current = client.probe()
-        if current.state == "internet_ok":
-            return f"网络已经在线（接口 {client.interface}），未重复提交登录。"
-        if current.state != "portal_detected":
-            raise NetworkError(f"cannot authenticate from state {current.state}")
-        credentials = credentials or self._credentials(payload)
-        result = client.login(credentials)
-        if result == "login_success":
-            save_credentials(credentials)
-            return f"校园网登录成功（接口 {client.interface}）。"
-        return f"校园网已经在线（接口 {client.interface}）。"
+        def poll() -> None:
+            try:
+                succeeded, value = results.get_nowait()
+            except queue.Empty:
+                self.root.after(50, poll)
+                return
+            on_success(value) if succeeded else on_error(str(value))
 
-    def run(self, action: str, payload: dict[str, Any]) -> str:
-        if action == "login":
-            return self._login_now(payload)
-        if action == "save":
-            save_credentials(self._credentials(payload))
+        threading.Thread(target=worker, daemon=True).start()
+        self.root.after(50, poll)
+
+    def _finish_error(self, message: str) -> None:
+        self._set_busy(False)
+        self._set_operation("操作失败：" + message, "error")
+
+    def _finish_success(self, value: object) -> None:
+        self.password.set("")
+        self._set_busy(False)
+        self._set_operation(str(value), "success")
+        self.refresh_status(keep_message=True)
+
+    def immediate_login(self) -> None:
+        interface = self.interface.get().strip()
+        username, password, operator = self._captured_credentials()
+        self._run_async(
+            lambda: login_now(interface, lambda: self._credentials_from_values(username, password, operator)),
+            "正在检查校园网状态…",
+        )
+
+    def save(self) -> None:
+        username, password, operator = self._captured_credentials()
+
+        def action() -> str:
+            save_credentials(self._credentials_from_values(username, password, operator))
             return "登录信息已保存。"
-        if action == "install":
-            credentials = self._credentials(payload)
-            interface = str(payload.get("interface", "auto")).strip()
+
+        self._run_async(action, "正在保存登录信息…")
+
+    def install(self) -> None:
+        interface = self.interface.get().strip()
+        username, password, operator = self._captured_credentials()
+
+        def action() -> str:
+            credentials = self._credentials_from_values(username, password, operator)
             save_credentials(credentials)
             enable_linger()
             install_service(interface)
             try:
-                login_message = self._login_now(payload, credentials)
+                message = login_now(interface, lambda: credentials)
             except EXPECTED_ERRORS as exc:
                 raise ServiceError(f"服务已安装，但立即登录失败：{exc}") from exc
-            return "开机自启服务已安装并启用；已立即执行连接检查：" + login_message
-        if action == "uninstall":
-            uninstall_service(remove_credentials=payload.get("remove_credentials") is True)
+            return "开机自启服务已安装并启用；" + message
+
+        self._run_async(action, "正在安装服务并检查校园网连接…")
+
+    def uninstall(self) -> None:
+        if not messagebox.askyesno("确认卸载", "确定要停用并卸载自动登录服务吗？", parent=self.root):
+            return
+        remove_credentials = self.remove_credentials.get()
+
+        def action() -> str:
+            uninstall_service(remove_credentials=remove_credentials)
             return "开机自启服务已卸载。"
-        if action == "logout":
-            interface = str(payload.get("interface", "auto")).strip()
+
+        self._run_async(action, "正在卸载开机自启服务…")
+
+    def logout(self) -> None:
+        if not messagebox.askyesno(
+            "确认注销", "确定要注销当前校园网会话吗？自动登录定时器将暂停，重启后恢复。", parent=self.root,
+        ):
+            return
+        interface = self.interface.get().strip()
+
+        def action() -> str:
             timer_was_active = pause_service()
             try:
                 CampusClient(interface=interface).logout()
@@ -160,162 +405,47 @@ class ControlPanel:
                     resume_service()
                 raise
             return "校园网会话已注销；正在运行的自动登录定时器已暂停。"
-        raise ValueError("unknown control panel action")
 
+        self._run_async(action, "正在注销校园网会话…")
 
-class ControlPanelServer(ThreadingHTTPServer):
-    daemon_threads = True
-
-    def __init__(self, address: tuple[str, int], panel: ControlPanel | None = None) -> None:
-        self.panel = panel or ControlPanel()
-        self.csrf_token = secrets.token_urlsafe(32)
-        self.csp_nonce = secrets.token_urlsafe(18)
-        template = resources.files("njupt_autologin").joinpath("webui.html").read_text(encoding="utf-8")
-        self.icon = resources.files("njupt_autologin").joinpath("app-icon.svg").read_bytes()
-        self.index = (
-            template.replace("__CSRF_TOKEN__", json.dumps(self.csrf_token))
-            .replace("__CSP_NONCE__", self.csp_nonce)
-            .encode("utf-8")
+    def refresh_status(self, *, keep_message: bool = False) -> None:
+        self._set_busy(True)
+        if not keep_message:
+            self._set_operation("正在读取服务状态…")
+        self._background(
+            service_status,
+            lambda value: self._status_loaded(value, keep_message=keep_message),
+            lambda value: self._status_error(value, keep_message=keep_message),
         )
-        super().__init__(address, ControlPanelHandler)
 
-
-class ControlPanelHandler(BaseHTTPRequestHandler):
-    server: ControlPanelServer
-
-    def log_message(self, _format: str, *_args: object) -> None:
-        return
-
-    def _host_allowed(self) -> bool:
-        host = self.headers.get("Host", "")
-        parsed = urlsplit("//" + host)
-        return parsed.hostname in LOOPBACK_HOSTS
-
-    def _origin_allowed(self) -> bool:
-        origin = self.headers.get("Origin")
-        return origin is None or urlsplit(origin).hostname in LOOPBACK_HOSTS
-
-    def _headers(self, status: HTTPStatus, content_type: str, length: int) -> None:
-        self.send_response(status)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(length))
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("Content-Security-Policy", (
-            "default-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; "
-            f"style-src 'nonce-{self.server.csp_nonce}'; script-src 'nonce-{self.server.csp_nonce}'; "
-            "connect-src 'self'; img-src 'self'"
-        ))
-        self.send_header("Referrer-Policy", "no-referrer")
-        self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("X-Frame-Options", "DENY")
-        self.end_headers()
-
-    def _bytes(self, status: HTTPStatus, body: bytes, content_type: str) -> None:
-        self._headers(status, content_type, len(body))
-        self.wfile.write(body)
-
-    def _json(self, status: HTTPStatus, value: dict[str, Any]) -> None:
-        body = json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-        self._bytes(status, body, "application/json; charset=utf-8")
-
-    def _reject_bad_host(self) -> bool:
-        if self._host_allowed():
-            return False
-        self._json(HTTPStatus.MISDIRECTED_REQUEST, {"ok": False, "error": "invalid host"})
-        return True
-
-    def do_GET(self) -> None:
-        if self._reject_bad_host():
+    def _status_loaded(self, value: object, *, keep_message: bool) -> None:
+        if not isinstance(value, ServiceStatus):
+            self._status_error("服务返回了无效状态", keep_message=keep_message)
             return
-        path = urlsplit(self.path).path
-        if path == "/":
-            self._bytes(HTTPStatus.OK, self.server.index, "text/html; charset=utf-8")
-            return
-        if path == "/api/state":
-            self._json(HTTPStatus.OK, {"ok": True, "state": self.server.panel.state()})
-            return
-        if path in ("/app-icon.svg", "/favicon.ico"):
-            self._bytes(HTTPStatus.OK, self.server.icon, "image/svg+xml")
-            return
-        self._json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "not found"})
+        colors = {"muted": MUTED, "success": SUCCESS, "warning": WARNING}
+        for widget, (text, kind) in zip(self.status_values, service_status_items(value), strict=True):
+            widget.configure(text=text, foreground=colors[kind])
+        self._set_busy(False)
+        if not keep_message:
+            self._set_operation("服务状态已更新。", "success")
 
-    def _read_payload(self) -> dict[str, Any]:
-        if self.headers.get_content_type() != "application/json":
-            raise ValueError("request must use application/json")
-        raw_length = self.headers.get("Content-Length")
-        if raw_length is None:
-            raise ValueError("request length is required")
-        length = int(raw_length)
-        if not 0 <= length <= MAX_BODY:
-            raise ValueError("request is too large")
-        value = json.loads(self.rfile.read(length))
-        if not isinstance(value, dict):
-            raise ValueError("request body must be an object")
-        return value
-
-    def do_POST(self) -> None:
-        if self._reject_bad_host():
-            return
-        if not self._origin_allowed():
-            self._json(HTTPStatus.FORBIDDEN, {"ok": False, "error": "invalid origin"})
-            return
-        supplied = self.headers.get("X-CSRF-Token", "")
-        if not hmac.compare_digest(supplied, self.server.csrf_token):
-            self._json(HTTPStatus.FORBIDDEN, {"ok": False, "error": "invalid request token"})
-            return
-        path = urlsplit(self.path).path
-        if path == "/api/shutdown":
-            self._json(HTTPStatus.OK, {"ok": True, "message": "控制面板已关闭。"})
-            threading.Thread(target=self.server.shutdown, daemon=True).start()
-            return
-        if not path.startswith("/api/"):
-            self._json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "not found"})
-            return
-        try:
-            payload = self._read_payload()
-            message = self.server.panel.run(path.removeprefix("/api/"), payload)
-            state = self.server.panel.state()
-        except EXPECTED_ERRORS as exc:
-            self._json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
-            return
-        except Exception:
-            self._json(HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "error": "internal error"})
-            return
-        self._json(HTTPStatus.OK, {"ok": True, "message": message, "state": state})
+    def _status_error(self, value: str, *, keep_message: bool) -> None:
+        for widget in self.status_values:
+            widget.configure(text="不可用", foreground=DANGER)
+        self._set_busy(False)
+        if not keep_message:
+            self._set_operation("无法读取服务状态：" + value, "error")
 
 
-def create_server(port: int = 0, panel: ControlPanel | None = None) -> ControlPanelServer:
-    if not 0 <= port <= 65_535:
-        raise ValueError("port must be between 0 and 65535")
-    return ControlPanelServer(("127.0.0.1", port), panel)
-
-
-def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="njupt-autologin-gui")
-    parser.add_argument("--port", type=int, default=0, help="loopback port; 0 chooses a free port")
-    parser.add_argument("--no-browser", action="store_true", help="print the URL without opening a browser")
-    return parser
-
-
-def main(argv: list[str] | None = None) -> int:
-    args = _parser().parse_args(argv)
+def main() -> int:
+    _set_windows_dpi_awareness()
     try:
-        server = create_server(args.port)
-    except (OSError, ValueError) as exc:
-        print(f"Cannot start control panel: {exc}", file=sys.stderr)
+        root = tk.Tk()
+    except tk.TclError as exc:
+        print(f"Cannot start GUI: {exc}", file=sys.stderr)
         return 1
-    url = f"http://127.0.0.1:{server.server_port}/"
-    print(f"NJUPT control panel: {url}", flush=True)
-    if not args.no_browser:
-        opener = threading.Timer(0.15, webbrowser.open, args=(url,))
-        opener.daemon = True
-        opener.start()
-    try:
-        server.serve_forever(poll_interval=0.2)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        server.server_close()
+    App(root)
+    root.mainloop()
     return 0
 
 

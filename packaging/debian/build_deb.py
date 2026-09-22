@@ -99,11 +99,10 @@ def build(output_dir: Path) -> Path:
             "Priority: optional\n"
             "Architecture: all\n"
             "Maintainer: RolixTesk\n"
-            "Depends: python3 (>= 3.10), iproute2, systemd, pkexec\n"
-            "Recommends: xdg-utils\n"
+            "Depends: python3 (>= 3.10), python3-tk, iproute2, systemd, pkexec\n"
             f"Installed-Size: {installed_size}\n"
             "Description: NJUPT wired network automatic login\n"
-            " A dependency-free Python client, local web control panel, and user\n"
+            " A Python client, native desktop control panel, and user\n"
             " systemd timer for the NJUPT wired network portal.\n",
         )
         env = os.environ.copy()
