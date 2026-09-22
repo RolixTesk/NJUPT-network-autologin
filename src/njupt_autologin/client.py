@@ -131,6 +131,13 @@ class CampusClient:
     @classmethod
     def online_campus_interface(cls, timeout: float = 10.0) -> str | None:
         """Return the first route-preferred interface with a confirmed online NJUPT session."""
+        interfaces = cls.online_campus_interfaces(timeout=timeout)
+        return interfaces[0] if interfaces else None
+
+    @classmethod
+    def online_campus_interfaces(cls, timeout: float = 10.0) -> list[str]:
+        """Return every default-route interface with a confirmed online NJUPT session."""
+        online: list[str] = []
         for interface in cls._default_interfaces():
             try:
                 client = cls(interface=interface, timeout=min(timeout, 4.0))
@@ -138,8 +145,8 @@ class CampusClient:
                     continue
             except (NetworkError, PortalError):
                 continue
-            return interface
-        return None
+            online.append(interface)
+        return online
 
     @staticmethod
     def _interface_ip(interface: str) -> str:

@@ -7,10 +7,10 @@ import re
 import shutil
 import subprocess
 import sys
-from dataclasses import dataclass
 from pathlib import Path
 
 from .credentials import default_path, load_credentials
+from .platform_services.base import ServiceError, ServiceStatus
 
 try:
     import pwd
@@ -18,20 +18,8 @@ except ImportError:  # Windows has no pwd module; the GUI can still load there.
     pwd = None  # type: ignore[assignment]
 
 
-class ServiceError(RuntimeError):
-    pass
-
-
 SERVICE_NAME = "njupt-autologin.service"
 TIMER_NAME = "njupt-autologin.timer"
-
-
-@dataclass(frozen=True)
-class ServiceStatus:
-    installed: bool
-    enabled: bool
-    active: bool
-    linger: bool
 
 
 def _run(command: list[str], *, check: bool = True, timeout: int = 15) -> subprocess.CompletedProcess[str]:

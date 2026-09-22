@@ -221,6 +221,20 @@ class AutoInterfaceTests(unittest.TestCase):
         ):
             self.assertEqual(CampusClient.online_campus_interface(), "ens33")
 
+    def test_online_campus_interfaces_returns_every_confirmed_session(self):
+        def campus_status(client, attempts=2):
+            del attempts
+            state = "internet_ok" if client.interface in {"ens33", "wlan0"} else "portal_detected"
+            return NetworkStatus(state)
+
+        with (
+            patch.object(CampusClient, "_default_interfaces", return_value=["ens33", "ens38", "wlan0"]),
+            patch.object(CampusClient, "_interface_ip", return_value="10.0.0.2"),
+            patch.object(CampusClient, "_require_route"),
+            patch.object(CampusClient, "campus_status", campus_status),
+        ):
+            self.assertEqual(CampusClient.online_campus_interfaces(), ["ens33", "wlan0"])
+
     def test_online_campus_interface_rejects_offline_portal_session(self):
         with (
             patch.object(CampusClient, "_default_interfaces", return_value=["ens33"]),

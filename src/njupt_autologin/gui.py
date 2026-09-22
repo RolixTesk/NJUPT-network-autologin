@@ -1,4 +1,4 @@
-"""Compact native desktop UI for credentials and startup service management."""
+"""Compact native desktop UI for campus login and startup service management."""
 
 from __future__ import annotations
 
@@ -13,11 +13,14 @@ from tkinter import messagebox, ttk
 
 from .client import AuthenticationError, CampusClient, NetworkError, PortalError
 from .credentials import CredentialError, Credentials, default_path, load_credentials, save_credentials
-from .gui_actions import login_now, service_status_items
-from .service import (
-    ServiceError, ServiceStatus, enable_linger, install_service, pause_service,
-    resume_service, service_status, uninstall_service,
+from .gui_actions import (
+    ConnectionSnapshot,
+    connection_status,
+    connection_status_text,
+    login_now,
+    service_status_items,
 )
+from .platform_services import DesktopServiceAdapter, ServiceError, ServiceStatus, load_service_adapter
 
 OPERATORS = {"校园网": "campus", "中国电信": "telecom", "中国移动": "mobile"}
 OPERATOR_LABELS = {
@@ -47,30 +50,46 @@ def _set_windows_dpi_awareness() -> None:
 
 
 class App:
-    def __init__(self, root: tk.Tk) -> None:
+    def __init__(self, root: tk.Tk, services: DesktopServiceAdapter | None = None) -> None:
         self.root = root
+        self.services = services or load_service_adapter()
         root.tk.call("tk", "appname", "njupt-autologin")
         root.title("NJUPT 校园网自动登录")
         root.iconname("NJUPT 校园网自动登录")
         root.configure(background=BG)
         root.resizable(False, False)
         root.option_add("*tearOff", False)
+
         self.username = tk.StringVar()
         self.password = tk.StringVar()
         self.operator = tk.StringVar(value="中国移动")
         self.interface = tk.StringVar(value="auto")
         self.remove_credentials = tk.BooleanVar(value=False)
-        self.operation_text = tk.StringVar(value="就绪，可以立即检查并连接校园网。")
+        self.operation_text = tk.StringVar(value="就绪，可以检查并连接校园网。")
+        self.connection_title = tk.StringVar(value="正在检测连接…")
+        self.connection_detail = tk.StringVar(value="正在核对校园网会话和外部网络连通性。")
+        self.multi_interface_text = tk.StringVar()
         self.buttons: list[ttk.Button] = []
         self.status_values: list[tk.Label] = []
         self.icon_image: tk.PhotoImage | None = None
         self.header_icon: tk.PhotoImage | None = None
+        self.current_connection_interface: str | None = None
+        self._animation_job: str | None = None
+        self._credentials_visible = False
+        self._has_credentials = self._load_existing()
+        try:
+            self.interface_values = ("auto", *self.services.available_interfaces())
+        except EXPECTED_ERRORS:
+            self.interface_values = ("auto",)
+
         self._configure_style()
         self._build()
-        self._load_existing()
+        root.update_idletasks()
+        self._credentials_height = self.credentials_card.winfo_reqheight() + 8
+        self._set_credentials_visible(not self._has_credentials, animate=False)
         root.update_idletasks()
         self._center_window()
-        self.refresh_status()
+        self.refresh_all()
 
     def _configure_style(self) -> None:
         style = ttk.Style(self.root)
@@ -115,7 +134,7 @@ class App:
             bordercolor=BORDER, lightcolor=BORDER, darkcolor=BORDER, padding=(13, 6),
         )
         style.map("Quiet.TButton", background=[("active", FIELD), ("disabled", "#F5F6F8")])
-        style.configure("Danger.TButton", background="#FCECEF", foreground=DANGER, borderwidth=0, padding=(13, 6))
+        style.configure("Danger.TButton", background="#FCECEF", foreground=DANGER, borderwidth=0, padding=(13, 7))
         style.map("Danger.TButton", background=[("active", "#F7DDE2"), ("disabled", "#F5F1F2")])
         style.configure("Modern.TCheckbutton", background=SURFACE, foreground=MUTED)
         style.map("Modern.TCheckbutton", background=[("active", SURFACE)])
@@ -129,11 +148,11 @@ class App:
         return content
 
     def _build(self) -> None:
-        main = ttk.Frame(self.root, style="App.TFrame", padding=14)
-        main.grid(row=0, column=0, sticky="nsew")
-        main.columnconfigure(0, weight=1)
+        self.main = ttk.Frame(self.root, style="App.TFrame", padding=14)
+        self.main.grid(row=0, column=0, sticky="nsew")
+        self.main.columnconfigure(0, weight=1, minsize=508)
 
-        header = ttk.Frame(main, style="App.TFrame")
+        header = ttk.Frame(self.main, style="App.TFrame")
         header.grid(row=0, column=0, sticky="ew", pady=(0, 10))
         try:
             icon_path = resources.files("njupt_autologin").joinpath("app-icon.png")
@@ -148,25 +167,16 @@ class App:
             font=(self.font_family, 18, "bold"),
         ).grid(row=0, column=1, sticky="sw")
         ttk.Label(
-            header, text="自动登录与开机服务控制", background=BG, foreground=MUTED,
+            header, text="认证、连通性与开机服务", background=BG, foreground=MUTED,
             font=(self.font_family, 9),
         ).grid(row=1, column=1, sticky="nw")
 
-        connect = self._card(main)
-        connect.master.grid(row=1, column=0, sticky="ew", pady=(0, 8))
-        connect.columnconfigure(0, weight=1)
-        ttk.Label(connect, text="校园网连接", style="Section.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Label(
-            connect, text="已登录时不会重复认证，也不会额外占用设备名额。", style="Muted.TLabel",
-        ).grid(row=1, column=0, sticky="w", pady=(4, 0))
-        login_button = ttk.Button(
-            connect, text="立即登录校园网", style="Primary.TButton", command=self.immediate_login,
-        )
-        login_button.grid(row=0, column=1, rowspan=2, sticky="e", padx=(18, 0))
-        self.buttons.append(login_button)
-
-        credentials = self._card(main)
-        credentials.master.grid(row=2, column=0, sticky="ew", pady=(0, 8))
+        self.credentials_shell = tk.Frame(self.main, background=BG, height=1)
+        self.credentials_shell.grid(row=1, column=0, sticky="ew")
+        self.credentials_shell.grid_propagate(False)
+        credentials = self._card(self.credentials_shell)
+        self.credentials_card = credentials.master
+        self.credentials_card.place(x=0, y=0, relwidth=1)
         credentials.columnconfigure(0, weight=1)
         credentials.columnconfigure(1, weight=1)
         ttk.Label(credentials, text="登录配置", style="Section.TLabel").grid(
@@ -175,9 +185,11 @@ class App:
         self._field(credentials, "账号", self.username, 1, 0)
         self._field(credentials, "密码", self.password, 1, 1, show="●")
         self._field(credentials, "运营商", self.operator, 3, 0, values=tuple(OPERATORS))
-        self._field(credentials, "网络接口", self.interface, 3, 1)
+        self.interface_box = self._field(
+            credentials, "网络接口", self.interface, 3, 1, values=self.interface_values,
+        )
         ttk.Label(
-            credentials, text="接口使用 auto 可自动选择；密码留空时沿用已保存的密码。", style="Muted.TLabel",
+            credentials, text="auto 会自动选择可用设备；密码留空时沿用已保存的密码。", style="Muted.TLabel",
         ).grid(row=5, column=0, columnspan=2, sticky="w", pady=(5, 8))
         save_button = ttk.Button(credentials, text="保存登录信息", style="Quiet.TButton", command=self.save)
         install_button = ttk.Button(
@@ -187,14 +199,68 @@ class App:
         install_button.grid(row=6, column=1, sticky="ew", padx=(5, 0))
         self.buttons.extend((save_button, install_button))
 
-        status = self._card(main)
+        connection = self._card(self.main)
+        connection.master.grid(row=2, column=0, sticky="ew", pady=(0, 8))
+        connection.columnconfigure(0, weight=1)
+        ttk.Label(connection, text="登录状态", style="Section.TLabel").grid(row=0, column=0, sticky="w")
+        refresh_button = ttk.Button(connection, text="刷新", style="Quiet.TButton", command=self.refresh_all)
+        refresh_button.grid(row=0, column=1, sticky="e", padx=(8, 6))
+        self.config_button = ttk.Button(
+            connection, text="登录配置", style="Secondary.TButton", command=self.toggle_credentials,
+        )
+        self.config_button.grid(row=0, column=2, sticky="e")
+        self.buttons.extend((refresh_button, self.config_button))
+
+        connection_panel = tk.Frame(connection, background=FIELD, padx=12, pady=10)
+        connection_panel.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(8, 8))
+        connection_panel.columnconfigure(1, weight=1)
+        self.connection_dot = tk.Label(
+            connection_panel, text="●", background=FIELD, foreground=MUTED,
+            font=(self.font_family, 12),
+        )
+        self.connection_dot.grid(row=0, column=0, rowspan=2, sticky="n", padx=(0, 9))
+        self.connection_title_label = tk.Label(
+            connection_panel, textvariable=self.connection_title, background=FIELD, foreground=TEXT,
+            font=(self.font_family, 11, "bold"), anchor="w",
+        )
+        self.connection_title_label.grid(row=0, column=1, sticky="ew")
+        tk.Label(
+            connection_panel, textvariable=self.connection_detail, background=FIELD, foreground=MUTED,
+            font=(self.font_family, 9), anchor="w", justify="left", wraplength=455,
+        ).grid(row=1, column=1, sticky="ew", pady=(2, 0))
+
+        self.multi_interface_banner = tk.Frame(connection, background="#FCECEF", padx=10, pady=7)
+        tk.Label(
+            self.multi_interface_banner, text="!", background="#FCECEF", foreground=DANGER,
+            font=(self.font_family, 10, "bold"),
+        ).pack(side="left", padx=(0, 7))
+        tk.Label(
+            self.multi_interface_banner, textvariable=self.multi_interface_text,
+            background="#FCECEF", foreground=DANGER, font=(self.font_family, 9),
+            anchor="w", justify="left", wraplength=460,
+        ).pack(side="left", fill="x", expand=True)
+        self.multi_interface_banner.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(0, 8))
+        self.multi_interface_banner.grid_remove()
+
+        connection_actions = ttk.Frame(connection, style="Card.TFrame")
+        connection_actions.grid(row=3, column=0, columnspan=3, sticky="ew")
+        connection_actions.columnconfigure(0, weight=1)
+        connection_actions.columnconfigure(1, weight=1)
+        login_button = ttk.Button(
+            connection_actions, text="立即登录校园网", style="Primary.TButton", command=self.immediate_login,
+        )
+        logout_button = ttk.Button(
+            connection_actions, text="注销当前会话", style="Quiet.TButton", command=self.logout,
+        )
+        login_button.grid(row=0, column=0, sticky="ew", padx=(0, 5))
+        logout_button.grid(row=0, column=1, sticky="ew", padx=(5, 0))
+        self.buttons.extend((login_button, logout_button))
+
+        status = self._card(self.main)
         status.master.grid(row=3, column=0, sticky="ew")
         for column in range(3):
             status.columnconfigure(column, weight=1, uniform="status")
         ttk.Label(status, text="服务状态", style="Section.TLabel").grid(row=0, column=0, sticky="w")
-        refresh_button = ttk.Button(status, text="刷新", style="Quiet.TButton", command=self.refresh_status)
-        refresh_button.grid(row=0, column=2, sticky="e")
-        self.buttons.append(refresh_button)
         for column, label in enumerate(("自动登录服务", "定时器", "开机运行")):
             tile = tk.Frame(status, background=FIELD, padx=12, pady=9)
             tile.grid(
@@ -218,36 +284,34 @@ class App:
         self.operation_dot.pack(side="left", padx=(0, 7))
         self.operation_label = tk.Label(
             self.operation_banner, textvariable=self.operation_text, background="#EDF2FC", foreground=TEXT,
-            font=(self.font_family, 9), anchor="w", wraplength=530, justify="left",
+            font=(self.font_family, 9), anchor="w", wraplength=480, justify="left",
         )
         self.operation_label.pack(side="left", fill="x", expand=True)
-        self.progress = ttk.Progressbar(status, mode="indeterminate", style="Slim.Horizontal.TProgressbar")
-        self.progress.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(7, 0))
-        self.progress.grid_remove()
+        self.progress_slot = tk.Frame(status, background=SURFACE, height=10)
+        self.progress_slot.grid(row=3, column=0, columnspan=3, sticky="ew")
+        self.progress_slot.grid_propagate(False)
+        self.progress = ttk.Progressbar(
+            self.progress_slot, mode="indeterminate", style="Slim.Horizontal.TProgressbar",
+        )
 
         maintenance = ttk.Frame(status, style="Card.TFrame")
         maintenance.grid(row=4, column=0, columnspan=3, sticky="ew", pady=(8, 0))
         maintenance.columnconfigure(0, weight=1)
-        maintenance.columnconfigure(1, weight=1)
-        logout_button = ttk.Button(
-            maintenance, text="注销当前会话", style="Quiet.TButton", command=self.logout,
-        )
         remove_button = ttk.Button(
             maintenance, text="卸载开机自启服务", style="Danger.TButton", command=self.uninstall,
         )
-        logout_button.grid(row=0, column=0, sticky="ew", padx=(0, 5))
-        remove_button.grid(row=0, column=1, sticky="ew", padx=(5, 0))
+        remove_button.grid(row=0, column=0, sticky="ew")
         ttk.Checkbutton(
             maintenance, text="卸载时同时删除保存的登录信息",
             variable=self.remove_credentials, style="Modern.TCheckbutton",
-        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(6, 0))
-        self.buttons.extend((logout_button, remove_button))
+        ).grid(row=1, column=0, sticky="w", pady=(6, 0))
+        self.buttons.append(remove_button)
 
     def _field(
         self, parent: ttk.Frame, label: str, variable: tk.StringVar,
         row: int, column: int, *, show: str | None = None,
         values: tuple[str, ...] | None = None,
-    ) -> None:
+    ) -> ttk.Widget:
         padx = (0 if column == 0 else 7, 7 if column == 0 else 0)
         ttk.Label(parent, text=label, style="Card.TLabel").grid(row=row, column=column, sticky="w", padx=padx)
         if values is None:
@@ -259,6 +323,7 @@ class App:
                 parent, textvariable=variable, values=values, state="readonly", style="Modern.TCombobox",
             )
         widget.grid(row=row + 1, column=column, sticky="ew", padx=padx, pady=(2, 5))
+        return widget
 
     def _center_window(self) -> None:
         width, height = self.root.winfo_reqwidth(), self.root.winfo_reqheight()
@@ -266,13 +331,61 @@ class App:
         y = max(0, (self.root.winfo_screenheight() - height) // 2)
         self.root.geometry(f"{width}x{height}+{x}+{y}")
 
-    def _load_existing(self) -> None:
+    def _load_existing(self) -> bool:
         try:
             credentials = load_credentials(path=default_path())
         except (CredentialError, json.JSONDecodeError, OSError):
-            return
+            return False
         self.username.set(credentials.username)
         self.operator.set(OPERATOR_LABELS.get(credentials.operator.strip().lower(), "中国移动"))
+        return True
+
+    def _refresh_interface_choices(self) -> None:
+        try:
+            interfaces = self.services.available_interfaces()
+        except EXPECTED_ERRORS:
+            interfaces = ()
+        values = ("auto", *interfaces)
+        self.interface_values = tuple(dict.fromkeys(values))
+        self.interface_box.configure(values=self.interface_values)
+        if self.interface.get() not in self.interface_values:
+            self.interface.set("auto")
+
+    def toggle_credentials(self) -> None:
+        self._set_credentials_visible(not self._credentials_visible, animate=True)
+
+    def _set_credentials_visible(self, visible: bool, *, animate: bool) -> None:
+        if visible:
+            self._refresh_interface_choices()
+        if self._animation_job is not None:
+            self.root.after_cancel(self._animation_job)
+            self._animation_job = None
+        self._credentials_visible = visible
+        self.config_button.configure(text="收起配置" if visible else "登录配置")
+        target = self._credentials_height if visible else 1
+        start = self.credentials_shell.winfo_height()
+        if not animate or start == target:
+            self.credentials_shell.configure(height=target)
+            return
+
+        window_width = self.root.winfo_width()
+        window_height = self.root.winfo_height()
+        window_x, window_y = self.root.winfo_x(), self.root.winfo_y()
+        steps = 10
+
+        def frame(index: int) -> None:
+            progress = index / steps
+            eased = 1 - (1 - progress) ** 3
+            height = round(start + (target - start) * eased)
+            self.credentials_shell.configure(height=height)
+            new_window_height = window_height + height - start
+            self.root.geometry(f"{window_width}x{new_window_height}+{window_x}+{window_y}")
+            if index < steps:
+                self._animation_job = self.root.after(16, frame, index + 1)
+            else:
+                self._animation_job = None
+
+        frame(1)
 
     @staticmethod
     def _credentials_from_values(username: str, password: str, operator: str) -> Credentials:
@@ -291,11 +404,11 @@ class App:
         for button in self.buttons:
             button.configure(state=state)
         if busy:
-            self.progress.grid()
+            self.progress.place(x=0, y=7, relwidth=1, height=3)
             self.progress.start(12)
         else:
             self.progress.stop()
-            self.progress.grid_remove()
+            self.progress.place_forget()
 
     def _set_operation(self, message: str, kind: str = "neutral") -> None:
         background, accent = {
@@ -306,10 +419,17 @@ class App:
         self.operation_dot.configure(background=background, foreground=accent)
         self.operation_label.configure(background=background)
 
-    def _run_async(self, action: Callable[[], str], progress_text: str) -> None:
+    def _run_async(
+        self, action: Callable[[], str], progress_text: str,
+        *, after_success: Callable[[], None] | None = None,
+    ) -> None:
         self._set_busy(True)
         self._set_operation(progress_text)
-        self._background(action, self._finish_success, self._finish_error)
+        self._background(
+            action,
+            lambda value: self._finish_success(value, after_success=after_success),
+            self._finish_error,
+        )
 
     def _background(
         self, action: Callable[[], object], on_success: Callable[[object], None],
@@ -322,6 +442,8 @@ class App:
                 result = action()
             except EXPECTED_ERRORS as exc:
                 results.put((False, str(exc)))
+            except Exception as exc:  # Keep a failed backend from leaving the GUI permanently busy.
+                results.put((False, f"{type(exc).__name__}: {exc}"))
             else:
                 results.put((True, result))
 
@@ -340,11 +462,13 @@ class App:
         self._set_busy(False)
         self._set_operation("操作失败：" + message, "error")
 
-    def _finish_success(self, value: object) -> None:
+    def _finish_success(self, value: object, *, after_success: Callable[[], None] | None = None) -> None:
         self.password.set("")
         self._set_busy(False)
         self._set_operation(str(value), "success")
-        self.refresh_status(keep_message=True)
+        if after_success is not None:
+            after_success()
+        self.refresh_all(keep_message=True)
 
     def immediate_login(self) -> None:
         interface = self.interface.get().strip()
@@ -361,7 +485,10 @@ class App:
             save_credentials(self._credentials_from_values(username, password, operator))
             return "登录信息已保存。"
 
-        self._run_async(action, "正在保存登录信息…")
+        self._run_async(
+            action, "正在保存登录信息…",
+            after_success=lambda: self._set_credentials_visible(False, animate=True),
+        )
 
     def install(self) -> None:
         interface = self.interface.get().strip()
@@ -370,15 +497,17 @@ class App:
         def action() -> str:
             credentials = self._credentials_from_values(username, password, operator)
             save_credentials(credentials)
-            enable_linger()
-            install_service(interface)
+            self.services.install(interface)
             try:
                 message = login_now(interface, lambda: credentials)
             except EXPECTED_ERRORS as exc:
                 raise ServiceError(f"服务已安装，但立即登录失败：{exc}") from exc
             return "开机自启服务已安装并启用；" + message
 
-        self._run_async(action, "正在安装服务并检查校园网连接…")
+        self._run_async(
+            action, "正在安装服务并检查校园网连接…",
+            after_success=lambda: self._set_credentials_visible(False, animate=True),
+        )
 
     def uninstall(self) -> None:
         if not messagebox.askyesno("确认卸载", "确定要停用并卸载自动登录服务吗？", parent=self.root):
@@ -386,7 +515,7 @@ class App:
         remove_credentials = self.remove_credentials.get()
 
         def action() -> str:
-            uninstall_service(remove_credentials=remove_credentials)
+            self.services.uninstall(remove_credentials=remove_credentials)
             return "开机自启服务已卸载。"
 
         self._run_async(action, "正在卸载开机自启服务…")
@@ -396,57 +525,126 @@ class App:
             "确认注销", "确定要注销当前校园网会话吗？自动登录定时器将暂停，重启后恢复。", parent=self.root,
         ):
             return
-        interface = self.interface.get().strip()
+        interface = self.current_connection_interface or self.interface.get().strip()
 
         def action() -> str:
-            timer_was_active = pause_service()
+            timer_was_active = self.services.pause()
             try:
                 CampusClient(interface=interface).logout()
             except Exception:
                 if timer_was_active:
-                    resume_service()
+                    self.services.resume()
                 raise
             return "校园网会话已注销；正在运行的自动登录定时器已暂停。"
 
         self._run_async(action, "正在注销校园网会话…")
 
-    def refresh_status(self, *, keep_message: bool = False) -> None:
+    def refresh_all(self, *, keep_message: bool = False) -> None:
+        interface = self.interface.get().strip()
         self._set_busy(True)
         if not keep_message:
-            self._set_operation("正在读取服务状态…")
+            self._set_operation("正在检测校园网与服务状态…")
+
+        def action() -> tuple[ConnectionSnapshot | str, ServiceStatus | str]:
+            try:
+                connection: ConnectionSnapshot | str = connection_status(interface)
+            except EXPECTED_ERRORS as exc:
+                connection = str(exc)
+            try:
+                service: ServiceStatus | str = self.services.status()
+            except EXPECTED_ERRORS as exc:
+                service = str(exc)
+            return connection, service
+
         self._background(
-            service_status,
-            lambda value: self._status_loaded(value, keep_message=keep_message),
-            lambda value: self._status_error(value, keep_message=keep_message),
+            action,
+            lambda value: self._all_status_loaded(value, keep_message=keep_message),
+            lambda value: self._all_status_error(value, keep_message=keep_message),
         )
 
-    def _status_loaded(self, value: object, *, keep_message: bool) -> None:
-        if not isinstance(value, ServiceStatus):
-            self._status_error("服务返回了无效状态", keep_message=keep_message)
+    def _all_status_loaded(self, value: object, *, keep_message: bool) -> None:
+        if not isinstance(value, tuple) or len(value) != 2:
+            self._all_status_error("状态模块返回了无效数据", keep_message=keep_message)
             return
-        colors = {"muted": MUTED, "success": SUCCESS, "warning": WARNING}
-        for widget, (text, kind) in zip(self.status_values, service_status_items(value), strict=True):
-            widget.configure(text=text, foreground=colors[kind])
+        connection, service = value
+        connection_ok = isinstance(connection, ConnectionSnapshot)
+        service_ok = isinstance(service, ServiceStatus)
+        if connection_ok:
+            self._show_connection(connection)
+        else:
+            self._show_connection_error(str(connection))
+        if service_ok:
+            self._show_service(service)
+        else:
+            self._show_service_error()
         self._set_busy(False)
         if not keep_message:
-            self._set_operation("服务状态已更新。", "success")
+            if connection_ok and service_ok:
+                self._set_operation("校园网与服务状态已更新。", "success")
+            else:
+                details = "；".join(str(item) for item, ok in ((connection, connection_ok), (service, service_ok)) if not ok)
+                self._set_operation("部分状态不可用：" + details, "error")
+        self._fit_window_to_content()
 
-    def _status_error(self, value: str, *, keep_message: bool) -> None:
+    def _show_connection(self, snapshot: ConnectionSnapshot) -> None:
+        title, detail, kind = connection_status_text(snapshot)
+        color = {"success": SUCCESS, "warning": WARNING, "error": DANGER}[kind]
+        self.current_connection_interface = snapshot.interface
+        self.connection_title.set(title)
+        self.connection_detail.set(detail)
+        self.connection_dot.configure(foreground=color)
+        self.connection_title_label.configure(foreground=color)
+        if len(snapshot.online_interfaces) > 1:
+            interfaces = "、".join(snapshot.online_interfaces)
+            self.multi_interface_text.set(f"检测到多个网卡已登录校园网：{interfaces}。建议只保留一个会话。")
+            self.multi_interface_banner.grid()
+        else:
+            self.multi_interface_banner.grid_remove()
+
+    def _show_connection_error(self, message: str) -> None:
+        self.current_connection_interface = None
+        self.connection_title.set("连接状态不可用")
+        self.connection_detail.set(message)
+        self.connection_dot.configure(foreground=DANGER)
+        self.connection_title_label.configure(foreground=DANGER)
+        self.multi_interface_banner.grid_remove()
+
+    def _show_service(self, status: ServiceStatus) -> None:
+        colors = {"muted": MUTED, "success": SUCCESS, "warning": WARNING}
+        for widget, (text, kind) in zip(self.status_values, service_status_items(status), strict=True):
+            widget.configure(text=text, foreground=colors[kind])
+
+    def _show_service_error(self) -> None:
         for widget in self.status_values:
             widget.configure(text="不可用", foreground=DANGER)
+
+    def _all_status_error(self, value: str, *, keep_message: bool) -> None:
+        self._show_connection_error(value)
+        self._show_service_error()
         self._set_busy(False)
         if not keep_message:
-            self._set_operation("无法读取服务状态：" + value, "error")
+            self._set_operation("无法读取状态：" + value, "error")
+        self._fit_window_to_content()
+
+    def _fit_window_to_content(self) -> None:
+        """Resize after a conditional warning is added or removed."""
+        if self._animation_job is not None:
+            return
+        self.root.update_idletasks()
+        width = max(self.root.winfo_width(), self.root.winfo_reqwidth())
+        height = self.root.winfo_reqheight()
+        self.root.geometry(f"{width}x{height}+{self.root.winfo_x()}+{self.root.winfo_y()}")
 
 
 def main() -> int:
     _set_windows_dpi_awareness()
     try:
         root = tk.Tk(className="NjuptAutologin")
-    except tk.TclError as exc:
+        services = load_service_adapter()
+    except (tk.TclError, ServiceError) as exc:
         print(f"Cannot start GUI: {exc}", file=sys.stderr)
         return 1
-    App(root)
+    App(root, services)
     root.mainloop()
     return 0
 

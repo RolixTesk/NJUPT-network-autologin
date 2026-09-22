@@ -3,7 +3,13 @@ from unittest.mock import Mock, patch
 
 from njupt_autologin.client import NetworkStatus
 from njupt_autologin.credentials import Credentials
-from njupt_autologin.gui_actions import login_now, service_status_items
+from njupt_autologin.gui_actions import (
+    ConnectionSnapshot,
+    connection_status,
+    connection_status_text,
+    login_now,
+    service_status_items,
+)
 from njupt_autologin.service import ServiceStatus
 
 
@@ -44,6 +50,33 @@ class ServiceStatusLabelTests(unittest.TestCase):
         labels = service_status_items(ServiceStatus(False, False, False, False))
         self.assertEqual(labels[0], ("未安装", "muted"))
         self.assertEqual(labels[1], ("未启用", "muted"))
+
+    def test_enabled_but_paused_timer_is_not_a_warning(self):
+        labels = service_status_items(ServiceStatus(True, True, False, True))
+        self.assertEqual(labels[1], ("已启用", "success"))
+
+
+class ConnectionStatusTests(unittest.TestCase):
+    def test_all_online_campus_interfaces_are_preserved_for_warning(self):
+        with patch(
+            "njupt_autologin.gui_actions.CampusClient.online_campus_interfaces",
+            return_value=["ens33", "wlan0"],
+        ):
+            snapshot = connection_status("auto")
+        self.assertEqual(snapshot, ConnectionSnapshot("campus_online", "ens33", ("ens33", "wlan0")))
+        title, detail, kind = connection_status_text(snapshot)
+        self.assertEqual(title, "校园网已登录")
+        self.assertIn("ens33", detail)
+        self.assertEqual(kind, "success")
+
+    def test_portal_state_reports_selected_interface(self):
+        client = Mock(interface="ens33")
+        client.authentication_status.return_value = NetworkStatus("portal_detected", 302)
+        with patch("njupt_autologin.gui_actions.CampusClient", return_value=client) as client_class:
+            client_class.online_campus_interfaces.return_value = []
+            snapshot = connection_status("auto")
+        self.assertEqual(snapshot.state, "portal_detected")
+        self.assertEqual(snapshot.interface, "ens33")
 
 
 if __name__ == "__main__":

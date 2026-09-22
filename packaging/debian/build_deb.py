@@ -22,13 +22,18 @@ def _write(path: Path, content: str, mode: int = 0o644) -> None:
     path.chmod(mode)
 
 
-def _copy_package(destination: Path) -> None:
+def _copy_package(destination: Path, *, platform: str) -> None:
     source = ROOT / "src" / "njupt_autologin"
     shutil.copytree(
         source,
         destination,
         ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
     )
+    adapter_dir = destination / "platform_services"
+    included_adapters = {"__init__.py", "base.py", f"{platform}.py"}
+    for adapter in adapter_dir.glob("*.py"):
+        if adapter.name not in included_adapters:
+            adapter.unlink()
     for path in destination.rglob("*"):
         path.chmod(0o755 if path.is_dir() else 0o644)
     destination.chmod(0o755)
@@ -49,7 +54,7 @@ def build(output_dir: Path) -> Path:
     with tempfile.TemporaryDirectory(prefix="njupt-deb-") as temporary:
         tree = Path(temporary) / f"{PACKAGE}_{version}_all"
         module_dir = tree / "usr" / "lib" / "python3" / "dist-packages" / "njupt_autologin"
-        _copy_package(module_dir)
+        _copy_package(module_dir, platform="linux")
 
         _write(
             tree / "usr" / "bin" / "njupt-autologin",
