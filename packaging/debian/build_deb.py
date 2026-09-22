@@ -80,6 +80,7 @@ def build(output_dir: Path) -> Path:
             "Comment=Configure campus login and startup service\n"
             "Exec=/usr/bin/njupt-autologin-gui\n"
             "Icon=njupt-autologin\n"
+            "StartupWMClass=Njuptautologin\n"
             "Terminal=false\n"
             "Categories=Network;\n",
         )

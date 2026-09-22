@@ -53,7 +53,7 @@ printf '%s\n' '{"username":"example","password":"example","operator":"mobile"}' 
 
 ```bash
 python3 packaging/debian/build_deb.py
-sudo apt install ./dist/njupt-autologin_0.7.1_all.deb
+sudo apt install ./dist/njupt-autologin_0.7.2_all.deb
 ```
 
 软件包安装 CLI、原生桌面 GUI、桌面菜单入口以及 systemd 用户服务和定时器。`apt` 会自动处理 `python3`、`python3-tk`、`iproute2`、`systemd` 和 `pkexec` 前置依赖。安装后可以通过 GUI 配置并启用服务，也可以直接执行：

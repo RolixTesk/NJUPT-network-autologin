@@ -49,7 +49,9 @@ def _set_windows_dpi_awareness() -> None:
 class App:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
+        root.tk.call("tk", "appname", "njupt-autologin")
         root.title("NJUPT 校园网自动登录")
+        root.iconname("NJUPT 校园网自动登录")
         root.configure(background=BG)
         root.resizable(False, False)
         root.option_add("*tearOff", False)
@@ -440,7 +442,7 @@ class App:
 def main() -> int:
     _set_windows_dpi_awareness()
     try:
-        root = tk.Tk()
+        root = tk.Tk(className="NjuptAutologin")
     except tk.TclError as exc:
         print(f"Cannot start GUI: {exc}", file=sys.stderr)
         return 1
