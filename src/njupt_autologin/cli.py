@@ -19,14 +19,23 @@ EXIT_AUTH = 4
 EXIT_CONFIG = 5
 
 
+def _add_help_alias(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
+    parser.add_argument(
+        "-h", "--help", "-help", action="help",
+        help="show this help message and exit",
+    )
+    return parser
+
+
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="njupt-autologin")
+    parser = argparse.ArgumentParser(prog="njupt-autologin", add_help=False)
+    _add_help_alias(parser)
     parser.add_argument("--interface", default="auto", help="campus interface or auto (default: auto)")
     parser.add_argument("--timeout", type=float, default=10.0, help="seconds per network request")
     parser.add_argument("--json", action="store_true", help="emit machine-readable status")
     commands = parser.add_subparsers(dest="command", required=True)
-    commands.add_parser("status", help="check campus internet/portal state")
-    login = commands.add_parser("login", help="authenticate only if a portal is present")
+    status = commands.add_parser("status", help="check campus internet/portal state", add_help=False)
+    login = commands.add_parser("login", help="authenticate only if a portal is present", add_help=False)
     login.add_argument(
         "--force", action="store_true",
         help="continue to another portal interface even if NJUPT is already online",
@@ -34,16 +43,24 @@ def _parser() -> argparse.ArgumentParser:
     sources = login.add_mutually_exclusive_group()
     sources.add_argument("--credentials-file", type=Path, help="private JSON or key-style credential file")
     sources.add_argument("--credentials-stdin", action="store_true", help="read JSON or key-style credentials from stdin")
-    commands.add_parser("logout", help="log out the selected campus interface and pause the timer")
-    configure = commands.add_parser("configure", help="write a private local credential file")
+    logout = commands.add_parser(
+        "logout", help="log out the selected campus interface and pause the timer", add_help=False,
+    )
+    configure = commands.add_parser("configure", help="write a private local credential file", add_help=False)
     inputs = configure.add_mutually_exclusive_group()
     inputs.add_argument("--from-file", type=Path, help="import a private credential file")
     inputs.add_argument("--credentials-stdin", action="store_true", help="read credentials from stdin")
     configure.add_argument("--output", type=Path, help="destination credential file")
-    service = commands.add_parser("install-service", help="install and enable the user systemd timer")
+    service = commands.add_parser(
+        "install-service", help="install and enable the user systemd timer", add_help=False,
+    )
     service.add_argument("--credentials-file", type=Path, help="private credential file to use")
-    remove = commands.add_parser("uninstall-service", help="disable and remove the user systemd timer")
+    remove = commands.add_parser(
+        "uninstall-service", help="disable and remove the user systemd timer", add_help=False,
+    )
     remove.add_argument("--remove-credentials", action="store_true", help="also delete saved credentials")
+    for command in (status, login, logout, configure, service, remove):
+        _add_help_alias(command)
     return parser
 
 

@@ -1,10 +1,32 @@
 import unittest
-from contextlib import redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from unittest.mock import Mock, patch
 
 from njupt_autologin.cli import EXIT_AUTH, main
 from njupt_autologin.client import PortalError
+
+
+class HelpAliasTests(unittest.TestCase):
+    def test_main_help_alias_exits_successfully(self):
+        output = StringIO()
+        with redirect_stdout(output), self.assertRaises(SystemExit) as result:
+            main(["-help"])
+        self.assertEqual(result.exception.code, 0)
+        self.assertIn("njupt-autologin", output.getvalue())
+        self.assertIn("install-service", output.getvalue())
+
+    def test_every_subcommand_accepts_help_alias(self):
+        for command in (
+            "status", "login", "logout", "configure",
+            "install-service", "uninstall-service",
+        ):
+            with self.subTest(command=command):
+                output = StringIO()
+                with redirect_stdout(output), self.assertRaises(SystemExit) as result:
+                    main([command, "-help"])
+                self.assertEqual(result.exception.code, 0)
+                self.assertIn(f"njupt-autologin {command}", output.getvalue())
 
 
 class LoginPolicyTests(unittest.TestCase):

@@ -53,7 +53,7 @@ printf '%s\n' '{"username":"example","password":"example","operator":"mobile"}' 
 
 ```bash
 python3 packaging/debian/build_deb.py
-sudo apt install ./dist/njupt-autologin_0.8.1_all.deb
+sudo apt install ./dist/njupt-autologin_0.8.2_all.deb
 ```
 
 软件包安装 CLI、原生桌面 GUI、桌面菜单入口以及 systemd 用户服务和定时器。`apt` 会自动处理 `python3`、`python3-tk`、`iproute2`、`systemd` 和 `pkexec` 前置依赖。安装后可以通过 GUI 配置并启用服务，也可以直接执行：
@@ -61,6 +61,13 @@ sudo apt install ./dist/njupt-autologin_0.8.1_all.deb
 ```bash
 njupt-autologin configure
 systemctl --user enable --now njupt-autologin.timer
+```
+
+查看主命令或具体子命令帮助时，可以使用标准的 `-h`、`--help`，也可以使用兼容别名 `-help`：
+
+```bash
+njupt-autologin -help
+njupt-autologin login -help
 ```
 
 若希望用户未登录桌面或 SSH 时也能运行，仍需由系统管理员为该用户启用 linger。
