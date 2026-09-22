@@ -1,6 +1,6 @@
 # 校园网自动登录
 
-该程序在 Ubuntu VM 上自动选择校园网接口。登录状态会同时核对 Portal 会话状态、国内 204 连通性探测和普通国内 HTTPS；仅有单个被 Portal 白名单放行的响应不会被判定为已登录。Portal 的会话接口可能在脚本登录成功后仍错误报告离线，因此“小米 204 + 百度 HTTPS”均成功时，以实际外网连通性为准。如果确认需要认证，则读取本地凭据、请求登录并复核联网；已联网时直接退出。网络请求同时绑定所选接口及其当前 IPv4 地址。`ens37` 仅用于 SSH 管理。
+该程序在 Linux 和 Windows 上自动选择校园网接口。登录状态会同时核对 Portal 会话状态、国内 204 连通性探测和普通国内 HTTPS；仅有单个被 Portal 白名单放行的响应不会被判定为已登录。Portal 的会话接口可能在脚本登录成功后仍错误报告离线，因此“小米 204 + 百度 HTTPS”均成功时，以实际外网连通性为准。如果确认需要认证，则读取本地凭据、请求登录并复核联网；已联网时直接退出。网络请求同时绑定所选接口及其当前 IPv4 地址。
 
 自动选择会读取 IPv4 默认路由接口。只有一个候选时直接使用；存在多个候选时，程序分别执行不带凭据的联网及 NJUPT Portal 状态探测。登录命令会先检查全部候选：只要确认任一接口已有 NJUPT 在线会话，就立即成功退出且不读取凭据，避免同一 PC 占用多个设备名额。
 
@@ -53,7 +53,7 @@ printf '%s\n' '{"username":"example","password":"example","operator":"mobile"}' 
 
 ```bash
 python3 packaging/debian/build_deb.py
-sudo apt install ./dist/njupt-autologin_0.8.2_all.deb
+sudo apt install ./dist/njupt-autologin_0.9.0_all.deb
 ```
 
 软件包安装 CLI、原生桌面 GUI、桌面菜单入口以及 systemd 用户服务和定时器。`apt` 会自动处理 `python3`、`python3-tk`、`iproute2`、`systemd` 和 `pkexec` 前置依赖。安装后可以通过 GUI 配置并启用服务，也可以直接执行：
@@ -70,7 +70,22 @@ njupt-autologin -help
 njupt-autologin login -help
 ```
 
-若希望用户未登录桌面或 SSH 时也能运行，仍需由系统管理员为该用户启用 linger。
+若希望 Linux 用户未登录桌面或 SSH 时也能运行，仍需由系统管理员为该用户启用 linger。
+
+### Windows 11 软件包
+
+Windows 安装包与便携版均包含 Python 和 Tk 运行时，使用时不需要安装 Python 或第三方包。运行安装程序后，从开始菜单打开“NJUPT 校园网自动登录”；便携版解压后运行 `njupt-autologin-gui.exe`。程序将凭据保存在 `%APPDATA%\njupt-autologin\credentials.json`，并通过 Windows ACL 限制为当前用户访问。
+
+安装服务后，程序使用当前用户的 Windows 任务计划程序每 2 分钟检查一次网络，并在用户登录 Windows 后自动运行。GUI 注销校园网时会暂停本次系统启动期间的自动登录；重启 Windows 后自动恢复。安装程序卸载时会移除任务计划，默认保留凭据。
+
+在 Windows 开发机上构建发布包：
+
+```powershell
+py -3.12 -m pip install pyinstaller
+py -3.12 packaging\windows\build_windows.py
+```
+
+脚本始终生成独立的便携版 ZIP；检测到 Inno Setup 6 时还会生成当前用户安装包。Windows 发布物只包含公共模块与 Windows 服务适配器，不包含 systemd/Linux 服务源码；Debian 包同样不会包含 Windows 适配器源码。
 
 ## 无人值守运行
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass
@@ -81,6 +82,10 @@ class Credentials:
 
 
 def default_path() -> Path:
+    if sys.platform == "win32":
+        appdata = os.environ.get("APPDATA")
+        if appdata:
+            return Path(appdata) / "njupt-autologin" / "credentials.json"
     return Path.home() / ".config" / "njupt-autologin" / "credentials.json"
 
 
@@ -98,7 +103,7 @@ def load_credentials(*, path: Path | None = None, stdin: bool = False) -> Creden
 def _read_file(path: Path) -> Credentials:
     try:
         mode = path.stat().st_mode
-        if mode & (stat.S_IRWXG | stat.S_IRWXO):
+        if sys.platform != "win32" and mode & (stat.S_IRWXG | stat.S_IRWXO):
             raise CredentialError("credential file must be private (chmod 600)")
         if not stat.S_ISREG(mode):
             raise CredentialError("credential path must be a regular file")
@@ -110,7 +115,8 @@ def _read_file(path: Path) -> Credentials:
 def save_credentials(credentials: Credentials, path: Path | None = None) -> Path:
     target = path or default_path()
     target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    os.chmod(target.parent, 0o700)
+    if sys.platform != "win32":
+        os.chmod(target.parent, 0o700)
     fd, temporary = tempfile.mkstemp(prefix=".credentials-", dir=target.parent)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as stream:
@@ -118,9 +124,32 @@ def save_credentials(credentials: Credentials, path: Path | None = None) -> Path
             stream.write("\n")
             stream.flush()
             os.fsync(stream.fileno())
-        os.chmod(temporary, 0o600)
+        if sys.platform != "win32":
+            os.chmod(temporary, 0o600)
         os.replace(temporary, target)
+        if sys.platform == "win32":
+            _secure_windows_file(target)
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
     return target
+
+
+def _secure_windows_file(path: Path) -> None:
+    """Restrict a saved credential file to the current Windows identity."""
+    try:
+        identity = subprocess.run(
+            ["whoami.exe"], check=True, capture_output=True, text=True, timeout=5,
+        ).stdout.strip()
+        if not identity:
+            raise OSError("empty Windows identity")
+        subprocess.run(
+            ["icacls.exe", str(path), "/inheritance:r", "/grant:r", f"{identity}:(F)"],
+            check=True, capture_output=True, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        try:
+            path.unlink()
+        except OSError:
+            pass
+        raise CredentialError("cannot protect the Windows credential file") from exc

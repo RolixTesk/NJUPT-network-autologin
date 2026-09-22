@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "njupt-autologin"
-version = "0.8.2"
+version = "0.9.0"
 description = "CLI and native desktop control panel for the NJUPT wired network portal"
 requires-python = ">=3.10"
 dependencies = []
@@ -17,4 +17,4 @@ njupt-autologin-gui = "njupt_autologin.gui:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-njupt_autologin = ["app-icon.svg", "app-icon.png"]
+njupt_autologin = ["app-icon.svg", "app-icon.png", "app-icon.ico"]

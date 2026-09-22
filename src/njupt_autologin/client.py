@@ -11,6 +11,7 @@ import secrets
 import socket
 import ssl
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from urllib.parse import urlencode, urlsplit
@@ -40,6 +41,27 @@ class AuthenticationError(RuntimeError):
     pass
 
 
+def _powershell_quote(value: str) -> str:
+    """Quote a literal string for a generated PowerShell expression."""
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _powershell_json(script: str, error: str) -> object:
+    encoded = base64.b64encode(
+        ("$ProgressPreference='SilentlyContinue';"
+         "[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false);" + script)
+        .encode("utf-16le")
+    ).decode("ascii")
+    try:
+        result = subprocess.run(
+            ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
+            check=True, capture_output=True, timeout=8,
+        )
+        return json.loads(result.stdout.decode("utf-8-sig"))
+    except (OSError, subprocess.SubprocessError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise NetworkError(error) from exc
+
+
 @dataclass(frozen=True)
 class Response:
     status: int
@@ -63,7 +85,7 @@ class CampusClient:
             raise ValueError("timeout must be between 0 and 60 seconds")
         if interface == "auto":
             interface = self._detect_interface(timeout, prefer_portal=prefer_portal)
-        if not re.fullmatch(r"[A-Za-z0-9_.:-]+", interface):
+        if not self._valid_interface_name(interface):
             raise ValueError("invalid interface name")
         self.interface = interface
         self.timeout = timeout
@@ -72,6 +94,22 @@ class CampusClient:
 
     @staticmethod
     def _default_interfaces() -> list[str]:
+        if sys.platform == "win32":
+            script = r"""
+$items = @(Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction Stop |
+    Where-Object { $_.InterfaceAlias -and $_.InterfaceAlias -ne 'Loopback Pseudo-Interface 1' } |
+    Sort-Object @{Expression={$_.RouteMetric + $_.InterfaceMetric}}, ifIndex |
+    Select-Object -ExpandProperty InterfaceAlias -Unique)
+ConvertTo-Json -Compress -InputObject $items
+"""
+            values = _powershell_json(script, "cannot inspect default routes")
+            interfaces = [values] if isinstance(values, str) else values
+            if not isinstance(interfaces, list) or not all(isinstance(item, str) for item in interfaces):
+                raise NetworkError("cannot inspect default routes")
+            interfaces = list(dict.fromkeys(item for item in interfaces if item))
+            if not interfaces:
+                raise NetworkError("no IPv4 default-route interface is available")
+            return interfaces
         try:
             result = subprocess.run(
                 ["ip", "-4", "-o", "route", "show", "default"],
@@ -150,6 +188,23 @@ class CampusClient:
 
     @staticmethod
     def _interface_ip(interface: str) -> str:
+        if sys.platform == "win32":
+            quoted = _powershell_quote(interface)
+            script = f"""
+$items = @(Get-NetIPAddress -AddressFamily IPv4 -InterfaceAlias {quoted} -ErrorAction Stop |
+    Where-Object {{ $_.IPAddress -notlike '169.254.*' -and $_.AddressState -ne 'Duplicate' }} |
+    Sort-Object @{{Expression={{if ($_.AddressState -eq 'Preferred') {{ 0 }} else {{ 1 }}}}}}, PrefixLength |
+    Select-Object -ExpandProperty IPAddress)
+ConvertTo-Json -Compress -InputObject $items
+"""
+            values = _powershell_json(script, "cannot inspect the campus interface")
+            addresses = [values] if isinstance(values, str) else values
+            if not isinstance(addresses, list) or not addresses:
+                raise NetworkError("campus interface has no IPv4 address")
+            try:
+                return str(ipaddress.IPv4Address(addresses[0]))
+            except (ValueError, TypeError) as exc:
+                raise NetworkError("campus interface has no valid IPv4 address") from exc
         try:
             result = subprocess.run(
                 ["ip", "-4", "-o", "addr", "show", "dev", interface],
@@ -163,6 +218,10 @@ class CampusClient:
         return str(ipaddress.IPv4Address(match.group(1)))
 
     def _require_route(self, destination: str) -> None:
+        if sys.platform == "win32":
+            if self.interface not in self._default_interfaces():
+                raise NetworkError("default internet route does not use the campus interface")
+            return
         try:
             result = subprocess.run(
                 ["ip", "-4", "route", "get", destination, "from", self.local_ip, "oif", self.interface],
@@ -173,6 +232,10 @@ class CampusClient:
         match = re.search(r"\bdev (\S+)", result.stdout)
         if not match or match.group(1) != self.interface:
             raise NetworkError("default internet route does not use the campus interface")
+
+    @staticmethod
+    def _valid_interface_name(interface: str) -> bool:
+        return bool(interface and len(interface) <= 256 and not any(ord(char) < 32 for char in interface))
 
     def _request(self, host: str, port: int, path: str, *, secure: bool = True) -> Response:
         try:

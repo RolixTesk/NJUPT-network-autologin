@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from ..client import CampusClient, NetworkError
 from ..service import (
     enable_linger,
@@ -26,9 +28,9 @@ class LinuxServiceAdapter:
     def status(self) -> ServiceStatus:
         return service_status()
 
-    def install(self, interface: str) -> None:
+    def install(self, interface: str, credential_path: Path | None = None) -> None:
         enable_linger()
-        install_service(interface)
+        install_service(interface, credential_path)
 
     def uninstall(self, *, remove_credentials: bool = False) -> None:
         uninstall_service(remove_credentials=remove_credentials)
@@ -38,3 +40,6 @@ class LinuxServiceAdapter:
 
     def resume(self) -> None:
         resume_service()
+
+    def scheduled_login_allowed(self) -> bool:
+        return True

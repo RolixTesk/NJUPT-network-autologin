@@ -59,16 +59,17 @@ class LoginPolicyTests(unittest.TestCase):
         client = Mock()
         client.interface = "ens33"
         client.logout.return_value = "logout_success"
+        services = Mock()
+        services.pause.return_value = True
         with (
             patch("njupt_autologin.cli.CampusClient", return_value=client),
-            patch("njupt_autologin.cli.pause_service", return_value=True) as pause,
-            patch("njupt_autologin.cli.resume_service") as resume,
+            patch("njupt_autologin.cli.load_service_adapter", return_value=services),
             patch("njupt_autologin.cli._emit") as emit,
         ):
             result = main(["logout"])
         self.assertEqual(result, 0)
-        pause.assert_called_once_with()
-        resume.assert_not_called()
+        services.pause.assert_called_once_with()
+        services.resume.assert_not_called()
         emit.assert_called_once_with(
             False, "logout_success", interface="ens33", timer_paused=True
         )
@@ -76,15 +77,29 @@ class LoginPolicyTests(unittest.TestCase):
     def test_logout_failure_restores_active_timer(self):
         client = Mock()
         client.logout.side_effect = PortalError("still online")
+        services = Mock()
+        services.pause.return_value = True
         with (
             patch("njupt_autologin.cli.CampusClient", return_value=client),
-            patch("njupt_autologin.cli.pause_service", return_value=True),
-            patch("njupt_autologin.cli.resume_service") as resume,
+            patch("njupt_autologin.cli.load_service_adapter", return_value=services),
             redirect_stderr(StringIO()),
         ):
             result = main(["logout"])
         self.assertEqual(result, EXIT_AUTH)
-        resume.assert_called_once_with()
+        services.resume.assert_called_once_with()
+
+    def test_scheduled_login_obeys_pause_marker_before_network_access(self):
+        services = Mock()
+        services.scheduled_login_allowed.return_value = False
+        with (
+            patch("njupt_autologin.cli.load_service_adapter", return_value=services),
+            patch("njupt_autologin.cli.CampusClient") as client,
+            patch("njupt_autologin.cli._emit") as emit,
+        ):
+            result = main(["login", "--scheduled"])
+        self.assertEqual(result, 0)
+        client.assert_not_called()
+        emit.assert_called_once_with(False, "service_paused")
 
 
 if __name__ == "__main__":

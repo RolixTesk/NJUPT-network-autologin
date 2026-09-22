@@ -44,7 +44,14 @@ def _set_windows_dpi_awareness() -> None:
         return
     try:
         import ctypes
+    except ImportError:
+        return
+    try:
         ctypes.windll.shcore.SetProcessDpiAwareness(1)
+    except (AttributeError, OSError):
+        pass
+    try:
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("njupt.autologin.desktop")
     except (AttributeError, OSError):
         pass
 

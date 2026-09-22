@@ -12,6 +12,10 @@ def load_service_adapter() -> DesktopServiceAdapter:
         from .linux import LinuxServiceAdapter
 
         return LinuxServiceAdapter()
+    if sys.platform == "win32":
+        from .windows import WindowsServiceAdapter
+
+        return WindowsServiceAdapter()
     raise ServiceError(f"desktop service control is not available on {sys.platform}")
 
 
