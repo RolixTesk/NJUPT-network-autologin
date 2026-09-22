@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import pwd
 import re
 import shutil
 import subprocess
@@ -12,6 +11,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .credentials import default_path, load_credentials
+
+try:
+    import pwd
+except ImportError:  # Windows has no pwd module; the GUI can still load there.
+    pwd = None  # type: ignore[assignment]
 
 
 class ServiceError(RuntimeError):
@@ -45,6 +49,8 @@ def _unit_dir() -> Path:
 
 
 def _linger_enabled() -> bool:
+    if sys.platform != "linux" or pwd is None:
+        return False
     username = pwd.getpwuid(os.getuid()).pw_name
     result = _run(["loginctl", "show-user", username, "-p", "Linger", "--value"], check=False)
     return result.returncode == 0 and result.stdout.strip().lower() == "yes"
@@ -52,6 +58,8 @@ def _linger_enabled() -> bool:
 
 def enable_linger() -> None:
     """Enable the user manager at boot, using the desktop privilege prompt if needed."""
+    if sys.platform != "linux" or pwd is None:
+        raise ServiceError("systemd startup is supported only on Linux")
     if _linger_enabled():
         return
     username = pwd.getpwuid(os.getuid()).pw_name
@@ -64,15 +72,20 @@ def enable_linger() -> None:
 
 
 def service_status() -> ServiceStatus:
+    if sys.platform != "linux":
+        return ServiceStatus(False, False, False, False)
     unit_dir = _unit_dir()
-    installed = (unit_dir / SERVICE_NAME).is_file() and (unit_dir / TIMER_NAME).is_file()
     enabled = _run(["systemctl", "--user", "is-enabled", TIMER_NAME], check=False).returncode == 0
     active = _run(["systemctl", "--user", "is-active", TIMER_NAME], check=False).returncode == 0
+    local_units = (unit_dir / SERVICE_NAME).is_file() and (unit_dir / TIMER_NAME).is_file()
+    installed = local_units or enabled or active
     return ServiceStatus(installed, enabled, active, _linger_enabled())
 
 
 def pause_service() -> bool:
     """Stop the active timer and return whether it must be restored after a failure."""
+    if sys.platform != "linux":
+        raise ServiceError("systemd service control is supported only on Linux")
     active = _run(["systemctl", "--user", "is-active", TIMER_NAME], check=False).returncode == 0
     if active:
         _run(["systemctl", "--user", "stop", TIMER_NAME])
@@ -80,6 +93,8 @@ def pause_service() -> bool:
 
 
 def resume_service() -> None:
+    if sys.platform != "linux":
+        raise ServiceError("systemd service control is supported only on Linux")
     _run(["systemctl", "--user", "start", TIMER_NAME])
 
 

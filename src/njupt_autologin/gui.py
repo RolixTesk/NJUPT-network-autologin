@@ -1,20 +1,24 @@
-"""Small Tkinter front end for credentials and startup service management."""
+"""Dependency-free local web control panel for credentials and service management."""
 
 from __future__ import annotations
 
+import argparse
+import hmac
 import json
-import queue
+import secrets
 import sys
 import threading
-import tkinter as tk
-from collections.abc import Callable
-from tkinter import messagebox, ttk
+import webbrowser
+from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from importlib import resources
+from typing import Any
+from urllib.parse import urlsplit
 
 from .client import AuthenticationError, CampusClient, NetworkError, PortalError
 from .credentials import CredentialError, Credentials, default_path, load_credentials, save_credentials
 from .service import (
     ServiceError,
-    ServiceStatus,
     enable_linger,
     install_service,
     pause_service,
@@ -24,215 +28,104 @@ from .service import (
 )
 
 
-OPERATORS = {
+LOOPBACK_HOSTS = {"127.0.0.1", "localhost"}
+MAX_BODY = 16_384
+EXPECTED_ERRORS = (
+    AuthenticationError,
+    CredentialError,
+    NetworkError,
+    PortalError,
+    ServiceError,
+    OSError,
+    ValueError,
+    json.JSONDecodeError,
+)
+OPERATOR_KEYS = {
+    "campus": "campus",
     "校园网": "campus",
+    "校园用户": "campus",
+    "telecom": "telecom",
     "中国电信": "telecom",
+    "电信": "telecom",
+    "@njxy": "telecom",
+    "mobile": "mobile",
     "中国移动": "mobile",
-}
-OPERATOR_LABELS = {
-    "campus": "校园网",
-    "校园网": "校园网",
-    "校园用户": "校园网",
-    "telecom": "中国电信",
-    "电信": "中国电信",
-    "中国电信": "中国电信",
-    "@njxy": "中国电信",
-    "mobile": "中国移动",
-    "移动": "中国移动",
-    "中国移动": "中国移动",
-    "@cmcc": "中国移动",
+    "移动": "mobile",
+    "@cmcc": "mobile",
 }
 
 
-class App:
-    def __init__(self, root: tk.Tk) -> None:
-        self.root = root
-        self.root.title("NJUPT 校园网自动登录")
-        self.root.resizable(False, False)
-        self.username = tk.StringVar()
-        self.password = tk.StringVar()
-        self.operator = tk.StringVar(value="中国移动")
-        self.interface = tk.StringVar(value="auto")
-        self.remove_credentials = tk.BooleanVar(value=False)
-        self.status_text = tk.StringVar(value="正在读取服务状态…")
-        self.buttons: list[ttk.Button] = []
-        self._build()
-        self._load_existing()
-        self.refresh_status()
+def _operator_key(value: str) -> str:
+    return OPERATOR_KEYS.get(value.strip().lower(), "mobile")
 
-    def _build(self) -> None:
-        frame = ttk.Frame(self.root, padding=18)
-        frame.grid(sticky="nsew")
-        ttk.Label(frame, text="校园网登录信息", font=("TkDefaultFont", 12, "bold")).grid(
-            row=0, column=0, columnspan=2, sticky="w", pady=(0, 12)
-        )
-        ttk.Label(frame, text="账号").grid(row=1, column=0, sticky="e", padx=(0, 10), pady=5)
-        ttk.Entry(frame, textvariable=self.username, width=32).grid(row=1, column=1, sticky="ew", pady=5)
-        ttk.Label(frame, text="密码").grid(row=2, column=0, sticky="e", padx=(0, 10), pady=5)
-        ttk.Entry(frame, textvariable=self.password, width=32, show="●").grid(row=2, column=1, sticky="ew", pady=5)
-        ttk.Label(frame, text="运营商").grid(row=3, column=0, sticky="e", padx=(0, 10), pady=5)
-        ttk.Combobox(
-            frame, textvariable=self.operator, values=tuple(OPERATORS), state="readonly", width=29
-        ).grid(row=3, column=1, sticky="ew", pady=5)
-        ttk.Label(frame, text="校园网接口").grid(row=4, column=0, sticky="e", padx=(0, 10), pady=5)
-        ttk.Entry(frame, textvariable=self.interface, width=32).grid(row=4, column=1, sticky="ew", pady=5)
-        ttk.Label(
-            frame,
-            text="接口填 auto 可自动选择。密码留空时沿用已保存的密码。凭据保存在当前用户的私有配置目录。",
-            foreground="#555555",
-            wraplength=390,
-        ).grid(row=5, column=0, columnspan=2, sticky="w", pady=(6, 14))
 
-        save_button = ttk.Button(frame, text="保存登录信息", command=self.save)
-        install_button = ttk.Button(frame, text="安装并启用开机自启", command=self.install)
-        save_button.grid(row=6, column=0, sticky="ew", padx=(0, 5))
-        install_button.grid(row=6, column=1, sticky="ew", padx=(5, 0))
-        self.buttons.extend((save_button, install_button))
+class ControlPanel:
+    """Platform-neutral actions exposed to the local browser UI."""
 
-        logout_button = ttk.Button(frame, text="注销当前校园网会话", command=self.logout)
-        logout_button.grid(row=7, column=0, columnspan=2, sticky="ew", pady=(10, 0))
-        self.buttons.append(logout_button)
+    @staticmethod
+    def _credentials(payload: dict[str, Any]) -> Credentials:
+        username = str(payload.get("username", "")).strip()
+        password = str(payload.get("password", ""))
+        operator = str(payload.get("operator", "")).strip()
+        if not password:
+            password = load_credentials(path=default_path()).password
+        return Credentials(username=username, password=password, operator=operator)
 
-        ttk.Separator(frame).grid(row=8, column=0, columnspan=2, sticky="ew", pady=16)
-        ttk.Label(frame, text="服务状态", font=("TkDefaultFont", 11, "bold")).grid(
-            row=9, column=0, sticky="w"
-        )
-        ttk.Label(frame, textvariable=self.status_text, wraplength=390).grid(
-            row=10, column=0, columnspan=2, sticky="w", pady=(7, 10)
-        )
-        ttk.Checkbutton(
-            frame, text="卸载时同时删除保存的登录信息", variable=self.remove_credentials
-        ).grid(row=11, column=0, columnspan=2, sticky="w", pady=(0, 8))
-        remove_button = ttk.Button(frame, text="卸载开机自启服务", command=self.uninstall)
-        refresh_button = ttk.Button(frame, text="刷新状态", command=self.refresh_status)
-        remove_button.grid(row=12, column=0, sticky="ew", padx=(0, 5))
-        refresh_button.grid(row=12, column=1, sticky="ew", padx=(5, 0))
-        self.buttons.extend((remove_button, refresh_button))
-        frame.columnconfigure(1, weight=1)
-
-    def _load_existing(self) -> None:
+    @staticmethod
+    def state() -> dict[str, Any]:
+        credential_state: dict[str, Any] = {"exists": False, "username": "", "operator": "mobile"}
         try:
             credentials = load_credentials(path=default_path())
-        except (CredentialError, json.JSONDecodeError):
-            return
-        self.username.set(credentials.username)
-        self.operator.set(OPERATOR_LABELS.get(credentials.operator.strip().lower(), "中国移动"))
+        except (CredentialError, json.JSONDecodeError, OSError):
+            pass
+        else:
+            credential_state = {
+                "exists": True,
+                "username": credentials.username,
+                "operator": _operator_key(credentials.operator),
+            }
 
-    def _credentials(self) -> Credentials:
-        password = self.password.get()
-        if not password:
+        service: dict[str, Any] = {
+            "supported": sys.platform == "linux",
+            "installed": False,
+            "enabled": False,
+            "active": False,
+            "linger": False,
+        }
+        if service["supported"]:
             try:
-                password = load_credentials(path=default_path()).password
-            except (CredentialError, json.JSONDecodeError) as exc:
-                raise CredentialError("请输入密码") from exc
-        return Credentials(
-            username=self.username.get().strip(),
-            password=password,
-            operator=OPERATORS[self.operator.get()],
-        )
-
-    def _set_busy(self, busy: bool) -> None:
-        state = "disabled" if busy else "normal"
-        for button in self.buttons:
-            button.configure(state=state)
-
-    def _run_async(self, action: Callable[[], None], success: str) -> None:
-        self._set_busy(True)
-        self.status_text.set("正在处理…")
-
-        self._background(
-            action,
-            lambda _result: self._finish_success(success),
-            self._finish_error,
-        )
-
-    def _background(
-        self,
-        action: Callable[[], object],
-        on_success: Callable[[object], None],
-        on_error: Callable[[str], None],
-    ) -> None:
-        results: queue.Queue[tuple[bool, object]] = queue.Queue(maxsize=1)
-
-        def worker() -> None:
-            try:
-                result = action()
-            except (
-                AuthenticationError, CredentialError, NetworkError,
-                PortalError, ServiceError, OSError, ValueError,
-            ) as exc:
-                results.put((False, str(exc)))
+                value = service_status()
+            except ServiceError as exc:
+                service["error"] = str(exc)
             else:
-                results.put((True, result))
+                service.update(
+                    installed=value.installed,
+                    enabled=value.enabled,
+                    active=value.active,
+                    linger=value.linger,
+                )
+        return {
+            "credentials": credential_state,
+            "service": service,
+            "platform": sys.platform,
+        }
 
-        def poll() -> None:
-            try:
-                succeeded, value = results.get_nowait()
-            except queue.Empty:
-                self.root.after(50, poll)
-                return
-            if succeeded:
-                on_success(value)
-            else:
-                on_error(str(value))
-
-        threading.Thread(target=worker, daemon=True).start()
-        self.root.after(50, poll)
-
-    def _finish_error(self, message: str) -> None:
-        self._set_busy(False)
-        self.status_text.set("操作失败")
-        messagebox.showerror("操作失败", message, parent=self.root)
-        self.refresh_status()
-
-    def _finish_success(self, message: str) -> None:
-        self.password.set("")
-        self._set_busy(False)
-        messagebox.showinfo("完成", message, parent=self.root)
-        self.refresh_status()
-
-    def save(self) -> None:
-        try:
-            credentials = self._credentials()
-        except (CredentialError, KeyError) as exc:
-            messagebox.showerror("登录信息无效", str(exc), parent=self.root)
-            return
-        self._run_async(lambda: save_credentials(credentials), "登录信息已保存。")
-
-    def install(self) -> None:
-        try:
-            credentials = self._credentials()
-            interface = self.interface.get().strip()
-        except (CredentialError, KeyError) as exc:
-            messagebox.showerror("登录信息无效", str(exc), parent=self.root)
-            return
-
-        def action() -> None:
+    def run(self, action: str, payload: dict[str, Any]) -> str:
+        if action == "save":
+            save_credentials(self._credentials(payload))
+            return "登录信息已保存。"
+        if action == "install":
+            credentials = self._credentials(payload)
+            interface = str(payload.get("interface", "auto")).strip()
             save_credentials(credentials)
             enable_linger()
             install_service(interface)
-
-        self._run_async(action, "开机自启服务已安装并启用。")
-
-    def uninstall(self) -> None:
-        if not messagebox.askyesno("确认卸载", "确定要停用并卸载自动登录服务吗？", parent=self.root):
-            return
-        remove_credentials = self.remove_credentials.get()
-        self._run_async(
-            lambda: uninstall_service(remove_credentials=remove_credentials),
-            "开机自启服务已卸载。",
-        )
-
-    def logout(self) -> None:
-        if not messagebox.askyesno(
-            "确认注销",
-            "确定要注销当前校园网会话吗？自动登录定时器将暂停，重启后恢复。",
-            parent=self.root,
-        ):
-            return
-        interface = self.interface.get().strip()
-
-        def action() -> None:
+            return "开机自启服务已安装并启用。"
+        if action == "uninstall":
+            uninstall_service(remove_credentials=payload.get("remove_credentials") is True)
+            return "开机自启服务已卸载。"
+        if action == "logout":
+            interface = str(payload.get("interface", "auto")).strip()
             timer_was_active = pause_service()
             try:
                 CampusClient(interface=interface).logout()
@@ -240,50 +133,162 @@ class App:
                 if timer_was_active:
                     resume_service()
                 raise
+            return "校园网会话已注销；正在运行的自动登录定时器已暂停。"
+        raise ValueError("unknown control panel action")
 
-        self._run_async(action, "校园网会话已注销；正在运行的自动登录定时器已暂停。")
 
-    @staticmethod
-    def _format_status(status: ServiceStatus) -> str:
-        if not status.installed:
-            return "未安装"
-        parts = ["定时器已启用" if status.enabled else "定时器未启用"]
-        parts.append("正在运行" if status.active else "当前未运行")
-        parts.append("支持开机启动" if status.linger else "尚未启用开机用户服务")
-        return "；".join(parts)
+class ControlPanelServer(ThreadingHTTPServer):
+    daemon_threads = True
 
-    def refresh_status(self) -> None:
-        self._set_busy(True)
-        self.status_text.set("正在读取服务状态…")
-        self._background(
-            service_status,
-            self._status_loaded,
-            self._status_error,
+    def __init__(self, address: tuple[str, int], panel: ControlPanel | None = None) -> None:
+        self.panel = panel or ControlPanel()
+        self.csrf_token = secrets.token_urlsafe(32)
+        self.csp_nonce = secrets.token_urlsafe(18)
+        template = resources.files("njupt_autologin").joinpath("webui.html").read_text(encoding="utf-8")
+        self.index = (
+            template.replace("__CSRF_TOKEN__", json.dumps(self.csrf_token))
+            .replace("__CSP_NONCE__", self.csp_nonce)
+            .encode("utf-8")
         )
+        super().__init__(address, ControlPanelHandler)
 
-    def _status_loaded(self, value: object) -> None:
-        if not isinstance(value, ServiceStatus):
-            self._status_error("服务返回了无效状态")
+
+class ControlPanelHandler(BaseHTTPRequestHandler):
+    server: ControlPanelServer
+
+    def log_message(self, _format: str, *_args: object) -> None:
+        return
+
+    def _host_allowed(self) -> bool:
+        host = self.headers.get("Host", "")
+        parsed = urlsplit("//" + host)
+        return parsed.hostname in LOOPBACK_HOSTS
+
+    def _origin_allowed(self) -> bool:
+        origin = self.headers.get("Origin")
+        return origin is None or urlsplit(origin).hostname in LOOPBACK_HOSTS
+
+    def _headers(self, status: HTTPStatus, content_type: str, length: int) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(length))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Security-Policy", (
+            "default-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; "
+            f"style-src 'nonce-{self.server.csp_nonce}'; script-src 'nonce-{self.server.csp_nonce}'; "
+            "connect-src 'self'"
+        ))
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.end_headers()
+
+    def _bytes(self, status: HTTPStatus, body: bytes, content_type: str) -> None:
+        self._headers(status, content_type, len(body))
+        self.wfile.write(body)
+
+    def _json(self, status: HTTPStatus, value: dict[str, Any]) -> None:
+        body = json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        self._bytes(status, body, "application/json; charset=utf-8")
+
+    def _reject_bad_host(self) -> bool:
+        if self._host_allowed():
+            return False
+        self._json(HTTPStatus.MISDIRECTED_REQUEST, {"ok": False, "error": "invalid host"})
+        return True
+
+    def do_GET(self) -> None:
+        if self._reject_bad_host():
             return
-        self._status_ready(self._format_status(value))
+        path = urlsplit(self.path).path
+        if path == "/":
+            self._bytes(HTTPStatus.OK, self.server.index, "text/html; charset=utf-8")
+            return
+        if path == "/api/state":
+            self._json(HTTPStatus.OK, {"ok": True, "state": self.server.panel.state()})
+            return
+        if path == "/favicon.ico":
+            self._bytes(HTTPStatus.NO_CONTENT, b"", "image/x-icon")
+            return
+        self._json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "not found"})
 
-    def _status_ready(self, value: str) -> None:
-        self.status_text.set(value)
-        self._set_busy(False)
+    def _read_payload(self) -> dict[str, Any]:
+        if self.headers.get_content_type() != "application/json":
+            raise ValueError("request must use application/json")
+        raw_length = self.headers.get("Content-Length")
+        if raw_length is None:
+            raise ValueError("request length is required")
+        length = int(raw_length)
+        if not 0 <= length <= MAX_BODY:
+            raise ValueError("request is too large")
+        value = json.loads(self.rfile.read(length))
+        if not isinstance(value, dict):
+            raise ValueError("request body must be an object")
+        return value
 
-    def _status_error(self, value: str) -> None:
-        self.status_text.set("无法读取服务状态：" + value)
-        self._set_busy(False)
+    def do_POST(self) -> None:
+        if self._reject_bad_host():
+            return
+        if not self._origin_allowed():
+            self._json(HTTPStatus.FORBIDDEN, {"ok": False, "error": "invalid origin"})
+            return
+        supplied = self.headers.get("X-CSRF-Token", "")
+        if not hmac.compare_digest(supplied, self.server.csrf_token):
+            self._json(HTTPStatus.FORBIDDEN, {"ok": False, "error": "invalid request token"})
+            return
+        path = urlsplit(self.path).path
+        if path == "/api/shutdown":
+            self._json(HTTPStatus.OK, {"ok": True, "message": "控制面板已关闭。"})
+            threading.Thread(target=self.server.shutdown, daemon=True).start()
+            return
+        if not path.startswith("/api/"):
+            self._json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "not found"})
+            return
+        try:
+            payload = self._read_payload()
+            message = self.server.panel.run(path.removeprefix("/api/"), payload)
+            state = self.server.panel.state()
+        except EXPECTED_ERRORS as exc:
+            self._json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
+            return
+        except Exception:
+            self._json(HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "error": "internal error"})
+            return
+        self._json(HTTPStatus.OK, {"ok": True, "message": message, "state": state})
 
 
-def main() -> int:
+def create_server(port: int = 0, panel: ControlPanel | None = None) -> ControlPanelServer:
+    if not 0 <= port <= 65_535:
+        raise ValueError("port must be between 0 and 65535")
+    return ControlPanelServer(("127.0.0.1", port), panel)
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="njupt-autologin-gui")
+    parser.add_argument("--port", type=int, default=0, help="loopback port; 0 chooses a free port")
+    parser.add_argument("--no-browser", action="store_true", help="print the URL without opening a browser")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parser().parse_args(argv)
     try:
-        root = tk.Tk()
-    except tk.TclError as exc:
-        print(f"Cannot start GUI: {exc}", file=sys.stderr)
+        server = create_server(args.port)
+    except (OSError, ValueError) as exc:
+        print(f"Cannot start control panel: {exc}", file=sys.stderr)
         return 1
-    App(root)
-    root.mainloop()
+    url = f"http://127.0.0.1:{server.server_port}/"
+    print(f"NJUPT control panel: {url}", flush=True)
+    if not args.no_browser:
+        opener = threading.Timer(0.15, webbrowser.open, args=(url,))
+        opener.daemon = True
+        opener.start()
+    try:
+        server.serve_forever(poll_interval=0.2)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
     return 0
 
 

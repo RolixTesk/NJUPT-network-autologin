@@ -1,0 +1,11 @@
+[Unit]
+Description=Check NJUPT wired network login periodically
+
+[Timer]
+OnStartupSec=30s
+OnUnitActiveSec=2min
+Persistent=true
+Unit=njupt-autologin.service
+
+[Install]
+WantedBy=timers.target

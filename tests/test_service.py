@@ -9,6 +9,7 @@ from njupt_autologin.service import (
     enable_linger,
     install_service,
     pause_service,
+    service_status,
     uninstall_service,
 )
 
@@ -97,6 +98,20 @@ class ServiceTests(unittest.TestCase):
         with patch("njupt_autologin.service._run", side_effect=lambda *_args, **_kwargs: next(responses)) as run:
             self.assertTrue(pause_service())
         self.assertEqual(run.call_args_list[1].args[0][-2:], ["stop", "njupt-autologin.timer"])
+
+    def test_enabled_packaged_timer_counts_as_installed_for_user(self):
+        with tempfile.TemporaryDirectory() as directory:
+            responses = iter((completed([], 0), completed([], 3)))
+            with (
+                patch("njupt_autologin.service.Path.home", return_value=Path(directory)),
+                patch("njupt_autologin.service._run", side_effect=lambda *_args, **_kwargs: next(responses)),
+                patch("njupt_autologin.service._linger_enabled", return_value=True),
+            ):
+                status = service_status()
+        self.assertTrue(status.installed)
+        self.assertTrue(status.enabled)
+        self.assertFalse(status.active)
+        self.assertTrue(status.linger)
 
 
 if __name__ == "__main__":

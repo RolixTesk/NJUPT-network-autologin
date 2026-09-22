@@ -1,0 +1,10 @@
+[Unit]
+Description=NJUPT wired network login
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=%h/.config/njupt-autologin/credentials.json
+
+[Service]
+Type=oneshot
+TimeoutStartSec=55
+ExecStart=/usr/bin/njupt-autologin --interface auto login --credentials-file %h/.config/njupt-autologin/credentials.json

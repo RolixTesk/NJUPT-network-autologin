@@ -12,3 +12,10 @@ captures/
 # Local agent work records
 .planning/
 agent.md
+
+# Local package builds
+build/
+dist/
+*.egg-info/
+__pycache__/
+*.py[cod]
