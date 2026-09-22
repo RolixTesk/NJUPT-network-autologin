@@ -101,6 +101,20 @@ class LoginPolicyTests(unittest.TestCase):
         client.assert_not_called()
         emit.assert_called_once_with(False, "service_paused")
 
+    def test_startup_login_waits_before_checking_pause_marker(self):
+        services = Mock()
+        services.scheduled_login_allowed.return_value = False
+        with (
+            patch("njupt_autologin.cli.time.sleep") as sleep,
+            patch("njupt_autologin.cli.load_service_adapter", return_value=services),
+            patch("njupt_autologin.cli.CampusClient") as client,
+            patch("njupt_autologin.cli._emit"),
+        ):
+            result = main(["login", "--scheduled", "--startup-delay", "30"])
+        self.assertEqual(result, 0)
+        sleep.assert_called_once_with(30.0)
+        client.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

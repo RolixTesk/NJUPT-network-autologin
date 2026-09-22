@@ -53,7 +53,7 @@ printf '%s\n' '{"username":"example","password":"example","operator":"mobile"}' 
 
 ```bash
 python3 packaging/debian/build_deb.py
-sudo apt install ./dist/njupt-autologin_0.9.1_all.deb
+sudo apt install ./dist/njupt-autologin_0.9.2_all.deb
 ```
 
 软件包安装 CLI、原生桌面 GUI、桌面菜单入口以及 systemd 用户服务和定时器。`apt` 会自动处理 `python3`、`python3-tk`、`iproute2`、`systemd` 和 `pkexec` 前置依赖。安装后可以通过 GUI 配置并启用服务，也可以直接执行：
@@ -76,7 +76,9 @@ njupt-autologin login -help
 
 Windows 安装包与便携版均包含 Python 和 Tk 运行时，使用时不需要安装 Python 或第三方包。运行安装程序后，从开始菜单打开“NJUPT 校园网自动登录”；便携版解压后运行 `njupt-autologin-gui.exe`。程序将凭据保存在 `%APPDATA%\njupt-autologin\credentials.json`，并通过 Windows ACL 限制为当前用户访问。
 
-安装服务后，程序在用户登录 Windows 约 30 秒后自动运行一次，不再周期检测。后台任务使用无控制台程序，GUI 调用 PowerShell 等系统组件时也不会显示终端窗口。GUI 注销校园网后，本次系统启动期间不会再次自动登录；重启并重新登录 Windows 后自动恢复。安装程序卸载时会移除任务计划，默认保留凭据。
+安装服务后，程序通过当前用户的 Windows 启动项，在登录系统约 30 秒后自动运行一次，不再周期检测，也不需要管理员权限。后台任务使用无控制台程序，GUI 调用系统组件时也不会显示终端窗口。GUI 注销校园网后，本次系统启动期间不会再次自动登录；重启并重新登录 Windows 后自动恢复。安装程序卸载时会移除启动项，默认保留凭据。
+
+安装程序提供“将命令行工具添加到当前用户 PATH”选项，默认不勾选。勾选后，新打开的 PowerShell 或命令提示符可以直接运行 `njupt-autologin`；卸载时只移除本程序自己的 PATH 项。覆盖安装会保留既有选择，并自动把旧版本的任务计划迁移为无需管理员权限的当前用户启动项。
 
 在 Windows 开发机上构建发布包：
 

@@ -6,6 +6,7 @@ import argparse
 import getpass
 import json
 import sys
+import time
 from pathlib import Path
 
 from .client import AuthenticationError, CampusClient, NetworkError, PortalError
@@ -41,6 +42,7 @@ def _parser() -> argparse.ArgumentParser:
         help="continue to another portal interface even if NJUPT is already online",
     )
     login.add_argument("--scheduled", action="store_true", help=argparse.SUPPRESS)
+    login.add_argument("--startup-delay", type=float, default=0, help=argparse.SUPPRESS)
     sources = login.add_mutually_exclusive_group()
     sources.add_argument("--credentials-file", type=Path, help="private JSON or key-style credential file")
     sources.add_argument("--credentials-stdin", action="store_true", help="read JSON or key-style credentials from stdin")
@@ -115,6 +117,10 @@ def main(argv: list[str] | None = None) -> int:
             _emit(args.json, "service_uninstalled")
             return 0
         if args.command == "login" and args.scheduled:
+            if not 0 <= args.startup_delay <= 120:
+                raise ValueError("startup delay must be between 0 and 120 seconds")
+            if args.startup_delay:
+                time.sleep(args.startup_delay)
             if not load_service_adapter().scheduled_login_allowed():
                 _emit(args.json, "service_paused")
                 return 0

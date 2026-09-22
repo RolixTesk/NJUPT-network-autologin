@@ -288,7 +288,12 @@ class App:
         for column in range(3):
             status.columnconfigure(column, weight=1, uniform="status")
         ttk.Label(status, text="服务状态", style="Section.TLabel").grid(row=0, column=0, sticky="w")
-        for column, label in enumerate(("自动登录服务", "启动任务", "开机运行")):
+        service_labels = (
+            ("自动登录启动项", "登录启动", "当前用户")
+            if self.services.platform == "windows"
+            else ("自动登录服务", "启动任务", "开机运行")
+        )
+        for column, label in enumerate(service_labels):
             tile = tk.Frame(status, background=FIELD, padx=12, pady=9)
             tile.grid(
                 row=1, column=column, sticky="ew",
@@ -549,10 +554,10 @@ class App:
                 message = login_now(interface, lambda: credentials)
             except EXPECTED_ERRORS as exc:
                 raise ServiceError(f"服务已安装，但立即登录失败：{exc}") from exc
-            return "开机自启服务已安装并启用；" + message
+            return "开机自启已启用；" + message
 
         self._run_async(
-            action, "正在安装服务并检查校园网连接…",
+            action, "正在配置开机自启并检查校园网连接，通常需要数秒…",
             scope="service",
             after_success=lambda: self._set_credentials_visible(False, animate=True),
         )

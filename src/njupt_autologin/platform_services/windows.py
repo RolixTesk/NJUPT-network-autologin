@@ -1,9 +1,7 @@
-"""Windows desktop adapter backed by the current user's Task Scheduler."""
+"""Windows desktop adapter backed by the current user's startup registry."""
 
 from __future__ import annotations
 
-import base64
-import json
 import os
 import subprocess
 import sys
@@ -14,8 +12,15 @@ from ..client import CampusClient, NetworkError
 from ..credentials import default_path, load_credentials
 from .base import ServiceError, ServiceStatus
 
+try:
+    import winreg
+except ImportError:  # The module is absent while cross-platform tests run on Linux.
+    winreg = None  # type: ignore[assignment]
 
-TASK_NAME = "NJUPT Auto Login"
+
+STARTUP_NAME = "NJUPT Auto Login"
+RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+LEGACY_TASK_NAME = "NJUPT Auto Login"
 
 
 def _run(command: list[str], *, check: bool = True, timeout: int = 20) -> subprocess.CompletedProcess[bytes]:
@@ -31,29 +36,13 @@ def _run(command: list[str], *, check: bool = True, timeout: int = 20) -> subpro
     return result
 
 
-def _powershell_json(script: str) -> object:
-    prefix = (
-        "$ProgressPreference='SilentlyContinue';"
-        "$ErrorActionPreference='Stop';"
-        "[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false);"
-    )
-    encoded = base64.b64encode((prefix + script).encode("utf-16le")).decode("ascii")
-    result = _run(
-        ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded]
-    )
-    try:
-        return json.loads(result.stdout.decode("utf-8-sig"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ServiceError("PowerShell returned invalid task information") from exc
-
-
 def _pause_path() -> Path:
     root = os.environ.get("LOCALAPPDATA")
     base = Path(root) if root else Path.home() / "AppData" / "Local"
     return base / "njupt-autologin" / "paused-this-boot"
 
 
-def _task_command(interface: str, credential: Path) -> str:
+def _startup_command(interface: str, credential: Path) -> str:
     if getattr(sys, "frozen", False):
         executable = Path(sys.executable).with_name("njupt-autologin-task.exe")
         if not executable.is_file():
@@ -65,9 +54,51 @@ def _task_command(interface: str, credential: Path) -> str:
         command = [str(windowless if windowless.is_file() else python), "-m", "njupt_autologin"]
     command.extend([
         "--interface", interface, "login", "--scheduled",
-        "--credentials-file", str(credential),
+        "--startup-delay", "30", "--credentials-file", str(credential),
     ])
     return subprocess.list2cmdline(command)
+
+
+def _read_startup_command() -> str | None:
+    if winreg is None:
+        return None
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY) as key:
+            value, _kind = winreg.QueryValueEx(key, STARTUP_NAME)
+    except OSError:
+        return None
+    return value if isinstance(value, str) and value else None
+
+
+def _write_startup_command(command: str) -> None:
+    if winreg is None:
+        raise ServiceError("Windows startup registry is unavailable")
+    try:
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, RUN_KEY) as key:
+            winreg.SetValueEx(key, STARTUP_NAME, 0, winreg.REG_SZ, command)
+    except OSError as exc:
+        raise ServiceError("cannot update the current user's startup applications") from exc
+
+
+def _delete_startup_command() -> None:
+    if winreg is None:
+        return
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE) as key:
+            winreg.DeleteValue(key, STARTUP_NAME)
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        raise ServiceError("cannot remove the current user's startup application") from exc
+
+
+def _legacy_task_exists() -> bool:
+    return _run(["schtasks.exe", "/Query", "/TN", LEGACY_TASK_NAME], check=False).returncode == 0
+
+
+def _remove_legacy_task() -> None:
+    if _legacy_task_exists():
+        _run(["schtasks.exe", "/Delete", "/TN", LEGACY_TASK_NAME, "/F"])
 
 
 class WindowsServiceAdapter:
@@ -79,41 +110,28 @@ class WindowsServiceAdapter:
         except NetworkError:
             return ()
 
-    def _task_enabled(self) -> tuple[bool, bool]:
-        script = f"""
-$task = Get-ScheduledTask -TaskName '{TASK_NAME}' -ErrorAction SilentlyContinue
-if ($null -eq $task) {{ ConvertTo-Json -Compress @{{installed=$false;enabled=$false}} }}
-else {{ ConvertTo-Json -Compress @{{installed=$true;enabled=($task.State -ne 'Disabled')}} }}
-"""
-        try:
-            value = _powershell_json(script)
-        except ServiceError:
-            query = _run(["schtasks.exe", "/Query", "/TN", TASK_NAME], check=False)
-            return query.returncode == 0, query.returncode == 0
-        if not isinstance(value, dict):
-            raise ServiceError("Task Scheduler returned invalid state")
-        return bool(value.get("installed")), bool(value.get("enabled"))
+    def _startup_enabled(self) -> tuple[bool, bool]:
+        if _read_startup_command() is not None:
+            return True, True
+        legacy = _legacy_task_exists()
+        return legacy, legacy
 
     def status(self) -> ServiceStatus:
-        installed, enabled = self._task_enabled()
-        allowed = self.scheduled_login_allowed()
-        return ServiceStatus(installed, enabled, enabled and allowed, enabled)
+        installed, enabled = self._startup_enabled()
+        return ServiceStatus(installed, enabled, False, enabled)
 
     def install(self, interface: str, credential_path: Path | None = None) -> None:
         if interface != "auto" and not CampusClient._valid_interface_name(interface):
             raise ServiceError("invalid interface name")
         credential = (credential_path or default_path()).expanduser().resolve()
         load_credentials(path=credential)
-        _run([
-            "schtasks.exe", "/Create", "/SC", "ONLOGON", "/DELAY", "0000:30",
-            "/TN", TASK_NAME, "/TR", _task_command(interface, credential), "/F",
-        ])
+        _remove_legacy_task()
+        _write_startup_command(_startup_command(interface, credential))
         self.resume()
 
     def uninstall(self, *, remove_credentials: bool = False) -> None:
-        installed, _enabled = self._task_enabled()
-        if installed:
-            _run(["schtasks.exe", "/Delete", "/TN", TASK_NAME, "/F"])
+        _delete_startup_command()
+        _remove_legacy_task()
         try:
             _pause_path().unlink()
         except FileNotFoundError:
@@ -125,7 +143,7 @@ else {{ ConvertTo-Json -Compress @{{installed=$true;enabled=($task.State -ne 'Di
                 pass
 
     def pause(self) -> bool:
-        installed, enabled = self._task_enabled()
+        installed, enabled = self._startup_enabled()
         if not (installed and enabled):
             return False
         marker = _pause_path()

@@ -94,6 +94,7 @@ UninstallDisplayIcon={{app}}\\njupt-autologin-gui.exe
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
+ChangesEnvironment=yes
 
 [Files]
 Source: "{source}\\njupt-autologin.exe"; DestDir: "{{app}}"; Flags: ignoreversion
@@ -106,6 +107,7 @@ Name: "{{autodesktop}}\\NJUPT 校园网自动登录"; Filename: "{{app}}\\njupt-
 
 [Tasks]
 Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "快捷方式："
+Name: "addtopath"; Description: "将命令行工具添加到当前用户 PATH"; GroupDescription: "命令行："; Flags: unchecked
 
 [Run]
 Filename: "{{app}}\\njupt-autologin.exe"; Parameters: "install-service"; Flags: runhidden waituntilterminated; Check: ExistingAutoLoginTask
@@ -119,9 +121,116 @@ function ExistingAutoLoginTask(): Boolean;
 var
   ResultCode: Integer;
 begin
-  Result := Exec(ExpandConstant('{{sys}}\\schtasks.exe'),
-    '/Query /TN "NJUPT Auto Login"', '', SW_HIDE,
-    ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
+  Result := RegValueExists(HKCU,
+    'Software\\Microsoft\\Windows\\CurrentVersion\\Run', 'NJUPT Auto Login');
+  if not Result then
+    Result := Exec(ExpandConstant('{{sys}}\\schtasks.exe'),
+      '/Query /TN "NJUPT Auto Login"', '', SW_HIDE,
+      ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
+end;
+
+function CanonicalPath(Value: String): String;
+begin
+  Value := Trim(Value);
+  if (Length(Value) >= 2) and (Value[1] = '"') and
+     (Value[Length(Value)] = '"') then
+  begin
+    Delete(Value, Length(Value), 1);
+    Delete(Value, 1, 1);
+  end;
+  while (Length(Value) > 3) and (Value[Length(Value)] = '\\') do
+    Delete(Value, Length(Value), 1);
+  Result := Lowercase(Value);
+end;
+
+function PathContains(CurrentValue, Entry: String): Boolean;
+var
+  Part: String;
+  Separator: Integer;
+begin
+  Result := False;
+  while CurrentValue <> '' do
+  begin
+    Separator := Pos(';', CurrentValue);
+    if Separator = 0 then
+    begin
+      Part := CurrentValue;
+      CurrentValue := '';
+    end
+    else
+    begin
+      Part := Copy(CurrentValue, 1, Separator - 1);
+      Delete(CurrentValue, 1, Separator);
+    end;
+    if CanonicalPath(Part) = CanonicalPath(Entry) then
+    begin
+      Result := True;
+      Exit;
+    end;
+  end;
+end;
+
+procedure AddToUserPath;
+var
+  CurrentValue: String;
+  AppDir: String;
+begin
+  AppDir := ExpandConstant('{{app}}');
+  if not RegQueryStringValue(HKCU, 'Environment', 'Path', CurrentValue) then
+    CurrentValue := '';
+  if not PathContains(CurrentValue, AppDir) then
+  begin
+    if (CurrentValue <> '') and (CurrentValue[Length(CurrentValue)] <> ';') then
+      CurrentValue := CurrentValue + ';';
+    RegWriteExpandStringValue(HKCU, 'Environment', 'Path', CurrentValue + AppDir);
+  end;
+end;
+
+procedure RemoveFromUserPath;
+var
+  CurrentValue: String;
+  NewValue: String;
+  Part: String;
+  Separator: Integer;
+  AppDir: String;
+begin
+  if not RegQueryStringValue(HKCU, 'Environment', 'Path', CurrentValue) then
+    Exit;
+  AppDir := ExpandConstant('{{app}}');
+  NewValue := '';
+  while CurrentValue <> '' do
+  begin
+    Separator := Pos(';', CurrentValue);
+    if Separator = 0 then
+    begin
+      Part := CurrentValue;
+      CurrentValue := '';
+    end
+    else
+    begin
+      Part := Copy(CurrentValue, 1, Separator - 1);
+      Delete(CurrentValue, 1, Separator);
+    end;
+    if (Trim(Part) <> '') and (CanonicalPath(Part) <> CanonicalPath(AppDir)) then
+    begin
+      if NewValue <> '' then
+        NewValue := NewValue + ';';
+      NewValue := NewValue + Part;
+    end;
+  end;
+  RegWriteExpandStringValue(HKCU, 'Environment', 'Path', NewValue);
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if (CurStep = ssPostInstall) and WizardIsTaskSelected('addtopath') then
+    AddToUserPath;
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+begin
+  if CurUninstallStep = usUninstall then
+    RemoveFromUserPath;
 end;
 """,
         encoding="utf-8-sig",
