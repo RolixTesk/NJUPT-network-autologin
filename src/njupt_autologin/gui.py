@@ -65,7 +65,8 @@ class App:
         self.operator = tk.StringVar(value="中国移动")
         self.interface = tk.StringVar(value="auto")
         self.remove_credentials = tk.BooleanVar(value=False)
-        self.operation_text = tk.StringVar(value="就绪，可以检查并连接校园网。")
+        self.connection_operation_text = tk.StringVar(value="连接操作就绪。")
+        self.service_operation_text = tk.StringVar(value="服务管理就绪。")
         self.connection_title = tk.StringVar(value="正在检测连接…")
         self.connection_detail = tk.StringVar(value="正在核对校园网会话和外部网络连通性。")
         self.multi_interface_text = tk.StringVar()
@@ -74,6 +75,7 @@ class App:
         self.icon_image: tk.PhotoImage | None = None
         self.header_icon: tk.PhotoImage | None = None
         self.current_connection_interface: str | None = None
+        self._busy_scope = "connection"
         self._animation_job: str | None = None
         self._credentials_visible = False
         self._has_credentials = self._load_existing()
@@ -242,8 +244,28 @@ class App:
         self.multi_interface_banner.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(0, 8))
         self.multi_interface_banner.grid_remove()
 
+        self.connection_operation_banner = tk.Frame(connection, background="#EDF2FC", padx=12, pady=9)
+        self.connection_operation_banner.grid(row=3, column=0, columnspan=3, sticky="ew")
+        self.connection_operation_dot = tk.Label(
+            self.connection_operation_banner, text="●", background="#EDF2FC", foreground=PRIMARY,
+            font=(self.font_family, 9),
+        )
+        self.connection_operation_dot.pack(side="left", padx=(0, 7))
+        self.connection_operation_label = tk.Label(
+            self.connection_operation_banner, textvariable=self.connection_operation_text,
+            background="#EDF2FC", foreground=TEXT, font=(self.font_family, 9),
+            anchor="w", wraplength=480, justify="left",
+        )
+        self.connection_operation_label.pack(side="left", fill="x", expand=True)
+        self.connection_progress_slot = tk.Frame(connection, background=SURFACE, height=10)
+        self.connection_progress_slot.grid(row=4, column=0, columnspan=3, sticky="ew")
+        self.connection_progress_slot.grid_propagate(False)
+        self.connection_progress = ttk.Progressbar(
+            self.connection_progress_slot, mode="indeterminate", style="Slim.Horizontal.TProgressbar",
+        )
+
         connection_actions = ttk.Frame(connection, style="Card.TFrame")
-        connection_actions.grid(row=3, column=0, columnspan=3, sticky="ew")
+        connection_actions.grid(row=5, column=0, columnspan=3, sticky="ew")
         connection_actions.columnconfigure(0, weight=1)
         connection_actions.columnconfigure(1, weight=1)
         login_button = ttk.Button(
@@ -275,23 +297,24 @@ class App:
             value.pack(anchor="w", pady=(2, 0))
             self.status_values.append(value)
 
-        self.operation_banner = tk.Frame(status, background="#EDF2FC", padx=12, pady=9)
-        self.operation_banner.grid(row=2, column=0, columnspan=3, sticky="ew")
-        self.operation_dot = tk.Label(
-            self.operation_banner, text="●", background="#EDF2FC", foreground=PRIMARY,
+        self.service_operation_banner = tk.Frame(status, background="#EDF2FC", padx=12, pady=9)
+        self.service_operation_banner.grid(row=2, column=0, columnspan=3, sticky="ew")
+        self.service_operation_dot = tk.Label(
+            self.service_operation_banner, text="●", background="#EDF2FC", foreground=PRIMARY,
             font=(self.font_family, 9),
         )
-        self.operation_dot.pack(side="left", padx=(0, 7))
-        self.operation_label = tk.Label(
-            self.operation_banner, textvariable=self.operation_text, background="#EDF2FC", foreground=TEXT,
+        self.service_operation_dot.pack(side="left", padx=(0, 7))
+        self.service_operation_label = tk.Label(
+            self.service_operation_banner, textvariable=self.service_operation_text,
+            background="#EDF2FC", foreground=TEXT,
             font=(self.font_family, 9), anchor="w", wraplength=480, justify="left",
         )
-        self.operation_label.pack(side="left", fill="x", expand=True)
-        self.progress_slot = tk.Frame(status, background=SURFACE, height=10)
-        self.progress_slot.grid(row=3, column=0, columnspan=3, sticky="ew")
-        self.progress_slot.grid_propagate(False)
-        self.progress = ttk.Progressbar(
-            self.progress_slot, mode="indeterminate", style="Slim.Horizontal.TProgressbar",
+        self.service_operation_label.pack(side="left", fill="x", expand=True)
+        self.service_progress_slot = tk.Frame(status, background=SURFACE, height=10)
+        self.service_progress_slot.grid(row=3, column=0, columnspan=3, sticky="ew")
+        self.service_progress_slot.grid_propagate(False)
+        self.service_progress = ttk.Progressbar(
+            self.service_progress_slot, mode="indeterminate", style="Slim.Horizontal.TProgressbar",
         )
 
         maintenance = ttk.Frame(status, style="Card.TFrame")
@@ -399,36 +422,48 @@ class App:
     def _captured_credentials(self) -> tuple[str, str, str]:
         return self.username.get(), self.password.get(), self.operator.get()
 
-    def _set_busy(self, busy: bool) -> None:
+    def _set_busy(self, busy: bool, *, scope: str = "connection") -> None:
         state = "disabled" if busy else "normal"
         for button in self.buttons:
             button.configure(state=state)
+        for progress in (self.connection_progress, self.service_progress):
+            progress.stop()
+            progress.place_forget()
         if busy:
-            self.progress.place(x=0, y=7, relwidth=1, height=3)
-            self.progress.start(12)
-        else:
-            self.progress.stop()
-            self.progress.place_forget()
+            self._busy_scope = scope
+            progress = self.connection_progress if scope == "connection" else self.service_progress
+            progress.place(x=0, y=7, relwidth=1, height=3)
+            progress.start(12)
 
-    def _set_operation(self, message: str, kind: str = "neutral") -> None:
+    def _set_operation(self, message: str, kind: str = "neutral", *, scope: str = "connection") -> None:
         background, accent = {
             "neutral": ("#EDF2FC", PRIMARY), "success": ("#EAF7F1", SUCCESS), "error": ("#FCECEF", DANGER),
         }[kind]
-        self.operation_text.set(message)
-        self.operation_banner.configure(background=background)
-        self.operation_dot.configure(background=background, foreground=accent)
-        self.operation_label.configure(background=background)
+        if scope == "connection":
+            text, banner, dot, label = (
+                self.connection_operation_text, self.connection_operation_banner,
+                self.connection_operation_dot, self.connection_operation_label,
+            )
+        else:
+            text, banner, dot, label = (
+                self.service_operation_text, self.service_operation_banner,
+                self.service_operation_dot, self.service_operation_label,
+            )
+        text.set(message)
+        banner.configure(background=background)
+        dot.configure(background=background, foreground=accent)
+        label.configure(background=background)
 
     def _run_async(
         self, action: Callable[[], str], progress_text: str,
-        *, after_success: Callable[[], None] | None = None,
+        *, scope: str = "connection", after_success: Callable[[], None] | None = None,
     ) -> None:
-        self._set_busy(True)
-        self._set_operation(progress_text)
+        self._set_busy(True, scope=scope)
+        self._set_operation(progress_text, scope=scope)
         self._background(
             action,
-            lambda value: self._finish_success(value, after_success=after_success),
-            self._finish_error,
+            lambda value: self._finish_success(value, scope=scope, after_success=after_success),
+            lambda message: self._finish_error(message, scope=scope),
         )
 
     def _background(
@@ -458,14 +493,17 @@ class App:
         threading.Thread(target=worker, daemon=True).start()
         self.root.after(50, poll)
 
-    def _finish_error(self, message: str) -> None:
+    def _finish_error(self, message: str, *, scope: str) -> None:
         self._set_busy(False)
-        self._set_operation("操作失败：" + message, "error")
+        self._set_operation("操作失败：" + message, "error", scope=scope)
 
-    def _finish_success(self, value: object, *, after_success: Callable[[], None] | None = None) -> None:
+    def _finish_success(
+        self, value: object, *, scope: str,
+        after_success: Callable[[], None] | None = None,
+    ) -> None:
         self.password.set("")
         self._set_busy(False)
-        self._set_operation(str(value), "success")
+        self._set_operation(str(value), "success", scope=scope)
         if after_success is not None:
             after_success()
         self.refresh_all(keep_message=True)
@@ -506,6 +544,7 @@ class App:
 
         self._run_async(
             action, "正在安装服务并检查校园网连接…",
+            scope="service",
             after_success=lambda: self._set_credentials_visible(False, animate=True),
         )
 
@@ -518,7 +557,7 @@ class App:
             self.services.uninstall(remove_credentials=remove_credentials)
             return "开机自启服务已卸载。"
 
-        self._run_async(action, "正在卸载开机自启服务…")
+        self._run_async(action, "正在卸载开机自启服务…", scope="service")
 
     def logout(self) -> None:
         if not messagebox.askyesno(
@@ -541,9 +580,9 @@ class App:
 
     def refresh_all(self, *, keep_message: bool = False) -> None:
         interface = self.interface.get().strip()
-        self._set_busy(True)
+        self._set_busy(True, scope="connection")
         if not keep_message:
-            self._set_operation("正在检测校园网与服务状态…")
+            self._set_operation("正在检测校园网与服务状态…", scope="connection")
 
         def action() -> tuple[ConnectionSnapshot | str, ServiceStatus | str]:
             try:
@@ -579,11 +618,12 @@ class App:
             self._show_service_error()
         self._set_busy(False)
         if not keep_message:
-            if connection_ok and service_ok:
-                self._set_operation("校园网与服务状态已更新。", "success")
+            if connection_ok:
+                self._set_operation("校园网状态已更新。", "success", scope="connection")
             else:
-                details = "；".join(str(item) for item, ok in ((connection, connection_ok), (service, service_ok)) if not ok)
-                self._set_operation("部分状态不可用：" + details, "error")
+                self._set_operation("连接状态不可用：" + str(connection), "error", scope="connection")
+            if not service_ok:
+                self._set_operation("服务状态不可用：" + str(service), "error", scope="service")
         self._fit_window_to_content()
 
     def _show_connection(self, snapshot: ConnectionSnapshot) -> None:
@@ -623,7 +663,8 @@ class App:
         self._show_service_error()
         self._set_busy(False)
         if not keep_message:
-            self._set_operation("无法读取状态：" + value, "error")
+            self._set_operation("无法读取连接状态：" + value, "error", scope="connection")
+            self._set_operation("无法读取服务状态：" + value, "error", scope="service")
         self._fit_window_to_content()
 
     def _fit_window_to_content(self) -> None:

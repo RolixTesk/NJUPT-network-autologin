@@ -70,11 +70,18 @@ class ProtocolTests(unittest.TestCase):
         client = object.__new__(CampusClient)
         client.probe = Mock(return_value=NetworkStatus("internet_ok", 204))
         client._session_state = Mock(return_value="offline")
-        client._external_access_status = Mock()
+        client._external_access_status = Mock(return_value=NetworkStatus("network_unavailable"))
         status = client.campus_status()
         self.assertEqual(status.state, "portal_detected")
         self.assertEqual(status.portal_host, "p.njupt.edu.cn")
-        client._external_access_status.assert_not_called()
+        client._external_access_status.assert_called_once_with()
+
+    def test_domestic_connectivity_overrides_stale_offline_session_marker(self):
+        client = object.__new__(CampusClient)
+        client.probe = Mock(return_value=NetworkStatus("internet_ok", 204))
+        client._session_state = Mock(return_value="offline")
+        client._external_access_status = Mock(return_value=NetworkStatus("internet_ok", 200))
+        self.assertEqual(client.campus_status().state, "internet_ok")
 
     def test_online_portal_still_requires_regular_external_https(self):
         client = object.__new__(CampusClient)
@@ -83,10 +90,13 @@ class ProtocolTests(unittest.TestCase):
         client._external_access_status = Mock(return_value=NetworkStatus("network_unavailable"))
         self.assertEqual(client.campus_status().state, "network_unavailable")
 
-    def test_login_reports_stale_online_ip_record(self):
+    def test_login_cleans_one_stale_online_ip_record_and_retries(self):
         client = object.__new__(CampusClient)
         client.local_ip = "10.0.0.2"
-        client.authentication_status = Mock(return_value=NetworkStatus("portal_detected", 302))
+        client.authentication_status = Mock(side_effect=(
+            NetworkStatus("portal_detected", 302),
+            NetworkStatus("internet_ok", 200),
+        ))
         client._require_route = Mock()
         client._status_data = Mock(return_value={"result": 0, "ss4": "000000000000", "vid": 0})
         client._config = Mock(return_value={
@@ -96,18 +106,40 @@ class ProtocolTests(unittest.TestCase):
             "page_index": "page",
             "enable_r3": 0,
         })
-        client._jsonp = Mock(return_value={"result": 0, "ret_code": 2})
+        client._jsonp = Mock(side_effect=({"result": 0, "ret_code": 2}, {"result": 1}))
+        client._request = Mock(return_value=Response(200, "text/html", "", b""))
         with (
             patch("njupt_autologin.client.socket.gethostbyname", return_value="10.10.244.11"),
-            self.assertRaisesRegex(AuthenticationError, "online record"),
+            patch("njupt_autologin.client.time.sleep"),
+        ):
+            self.assertEqual(client.login(Credentials("student", "fake-pass", "mobile")), "login_success")
+        self.assertEqual(client._jsonp.call_count, 2)
+        client._request.assert_called_once()
+
+    def test_login_does_not_repeat_stale_cleanup(self):
+        client = object.__new__(CampusClient)
+        client.local_ip = "10.0.0.2"
+        client.authentication_status = Mock(return_value=NetworkStatus("portal_detected", 302))
+        client._require_route = Mock()
+        client._submit_login = Mock(return_value={"result": 0, "ret_code": 2})
+        client._clear_stale_online_record = Mock()
+        with (
+            patch("njupt_autologin.client.socket.gethostbyname", return_value="10.10.244.11"),
+            self.assertRaisesRegex(AuthenticationError, "one cleanup attempt"),
         ):
             client.login(Credentials("student", "fake-pass", "mobile"))
+        self.assertEqual(client._submit_login.call_count, 2)
+        client._clear_stale_online_record.assert_called_once_with()
 
     def test_logout_verifies_portal_transition(self):
         client = object.__new__(CampusClient)
         client.interface = "ens33"
         client.timeout = 5
-        client._session_state = Mock(side_effect=("online", "offline"))
+        client.authentication_status = Mock(side_effect=(
+            NetworkStatus("internet_ok", 200),
+            NetworkStatus("portal_detected", 302),
+        ))
+        client._session_state = Mock(return_value="offline")
         client._request = Mock(return_value=Response(200, "text/html", "", b"failure marker"))
         with patch("njupt_autologin.client.time.sleep"):
             self.assertEqual(client.logout(), "logout_success")
@@ -117,6 +149,7 @@ class ProtocolTests(unittest.TestCase):
 
     def test_logout_is_idempotent_when_portal_is_already_present(self):
         client = object.__new__(CampusClient)
+        client.authentication_status = Mock(return_value=NetworkStatus("portal_detected", 302))
         client._session_state = Mock(return_value="offline")
         client._request = Mock()
         self.assertEqual(client.logout(), "already_offline")

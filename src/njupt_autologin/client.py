@@ -20,7 +20,7 @@ from .credentials import Credentials
 
 PORTAL_HOST = "p.njupt.edu.cn"
 PORTAL_IP = "10.10.244.11"
-CONNECTIVITY_HOST = "connectivitycheck.gstatic.com"
+CONNECTIVITY_HOST = "connect.rom.miui.com"
 EXTERNAL_CHECK_HOST = "www.baidu.com"
 EXTERNAL_CHECK_PATH = "/favicon.ico"
 USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64; rv:150.0) Gecko/20100101 Firefox/150.0"
@@ -270,14 +270,19 @@ class CampusClient:
         return NetworkStatus("unexpected_response", response.status)
 
     def _status_with_session(self, connectivity: NetworkStatus, session: str) -> NetworkStatus:
+        if connectivity.state == "internet_ok":
+            external = self._external_access_status()
+            if external.state == "internet_ok":
+                return external
+            if session == "offline":
+                return NetworkStatus("portal_detected", connectivity.http_status, PORTAL_HOST)
+            return external
         if session == "offline":
             return NetworkStatus("portal_detected", connectivity.http_status, PORTAL_HOST)
-        if connectivity.state != "internet_ok":
-            return connectivity
-        return self._external_access_status()
+        return connectivity
 
     def campus_status(self, attempts: int = 2) -> NetworkStatus:
-        """Require both an online NJUPT session and ordinary external HTTPS access."""
+        """Confirm the NJUPT endpoint plus domestic 204 and ordinary HTTPS access."""
         connectivity = self.probe(attempts=attempts)
         return self._status_with_session(connectivity, self._session_state())
 
@@ -378,19 +383,15 @@ class CampusClient:
         except OSError:
             raise NetworkError("cannot resolve the portal host") from None
         self._require_route(portal_ip)
-        status = self._status_data()
-        if str(status.get("result")) != "0":
-            raise PortalError("portal state is not offline")
-        config = self._config()
-        result = self._jsonp(
-            804, "/eportal/portal/login",
-            self._login_fields(credentials, self.local_ip, status, config), lang="en",
-        )
+        result = self._submit_login(credentials)
+        if str(result.get("result")) not in ("1", "ok") and str(result.get("ret_code")) == "2":
+            self._clear_stale_online_record()
+            result = self._submit_login(credentials)
         if str(result.get("result")) not in ("1", "ok"):
             # Never include server messages: some deployments echo credentials.
             if str(result.get("ret_code")) == "2":
                 raise AuthenticationError(
-                    "portal still has an online record for this IP, but external access is unavailable"
+                    "portal still has an online record for this IP after one cleanup attempt"
                 )
             raise AuthenticationError("portal rejected the credentials or account state")
         for delay in (0, 2, 4):
@@ -400,8 +401,29 @@ class CampusClient:
                 return "login_success"
         raise AuthenticationError("portal accepted login, but internet check still fails")
 
+    def _submit_login(self, credentials: Credentials) -> dict[str, object]:
+        status = self._status_data()
+        if str(status.get("result")) != "0":
+            raise PortalError("portal state is not offline")
+        config = self._config()
+        return self._jsonp(
+            804, "/eportal/portal/login",
+            self._login_fields(credentials, self.local_ip, status, config), lang="en",
+        )
+
+    def _clear_stale_online_record(self) -> None:
+        response = self._request(
+            PORTAL_IP, 801,
+            "/eportal/?c=ACSetting&a=Logout&ver=1.0&url=drappall",
+            secure=False,
+        )
+        if response.status != 200:
+            raise PortalError(f"stale-session cleanup returned HTTP {response.status}")
+        time.sleep(2)
+
     def logout(self) -> str:
-        if self._session_state() == "offline":
+        initial = self.authentication_status(attempts=1)
+        if initial.state != "internet_ok" and self._session_state() == "offline":
             return "already_offline"
         response = self._request(
             PORTAL_IP, 801,
@@ -410,10 +432,10 @@ class CampusClient:
         )
         if response.status != 200:
             raise PortalError(f"logout endpoint returned HTTP {response.status}")
-        # The configured AC endpoint returns a failure marker even when logout
-        # succeeds asynchronously, so the bound-interface Portal session is authoritative.
+        # The configured AC endpoint and chkstatus can both report stale values,
+        # so the bound interface's domestic connectivity transition is authoritative.
         for delay in (0.5, 1.0, 2.0, 4.0):
             time.sleep(delay)
-            if self._session_state() == "offline":
+            if self.authentication_status(attempts=1).state == "portal_detected":
                 return "logout_success"
         raise PortalError("logout request completed, but the interface remains online")
