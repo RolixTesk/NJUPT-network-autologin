@@ -1,6 +1,6 @@
 # 校园网自动登录
 
-该程序在 Ubuntu VM 上自动选择校园网接口。如果 HTTP 探测返回 Portal，则读取本地凭据、请求登录并复核联网；已联网时直接退出。网络请求同时绑定所选接口及其当前 IPv4 地址。`ens37` 仅用于 SSH 管理。
+该程序在 Ubuntu VM 上自动选择校园网接口。登录状态会同时核对 Portal 会话状态、系统连通性探测和普通外部 HTTPS；仅有被 Portal 白名单放行的连通性测试响应不会再被判定为已登录。如果确认需要认证，则读取本地凭据、请求登录并复核联网；已联网时直接退出。网络请求同时绑定所选接口及其当前 IPv4 地址。`ens37` 仅用于 SSH 管理。
 
 自动选择会读取 IPv4 默认路由接口。只有一个候选时直接使用；存在多个候选时，程序分别执行不带凭据的联网及 NJUPT Portal 状态探测。登录命令会先检查全部候选：只要确认任一接口已有 NJUPT 在线会话，就立即成功退出且不读取凭据，避免同一 PC 占用多个设备名额。
 
@@ -53,7 +53,7 @@ printf '%s\n' '{"username":"example","password":"example","operator":"mobile"}' 
 
 ```bash
 python3 packaging/debian/build_deb.py
-sudo apt install ./dist/njupt-autologin_0.7.2_all.deb
+sudo apt install ./dist/njupt-autologin_0.7.3_all.deb
 ```
 
 软件包安装 CLI、原生桌面 GUI、桌面菜单入口以及 systemd 用户服务和定时器。`apt` 会自动处理 `python3`、`python3-tk`、`iproute2`、`systemd` 和 `pkexec` 前置依赖。安装后可以通过 GUI 配置并启用服务，也可以直接执行：

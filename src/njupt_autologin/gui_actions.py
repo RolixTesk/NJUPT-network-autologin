@@ -15,7 +15,7 @@ def login_now(interface: str, credential_factory: Callable[[], Credentials]) -> 
     if online_interface:
         return f"校园网已经在线（接口 {online_interface}），未重复提交登录。"
     client = CampusClient(interface=interface, prefer_portal=True)
-    current = client.probe()
+    current = client.authentication_status()
     if current.state == "internet_ok":
         return f"网络已经在线（接口 {client.interface}），未重复提交登录。"
     if current.state != "portal_detected":

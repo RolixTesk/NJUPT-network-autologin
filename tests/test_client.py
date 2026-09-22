@@ -2,7 +2,14 @@ import subprocess
 import unittest
 from unittest.mock import Mock, patch
 
-from njupt_autologin.client import CampusClient, NetworkError, NetworkStatus, PortalError, Response
+from njupt_autologin.client import (
+    AuthenticationError,
+    CampusClient,
+    NetworkError,
+    NetworkStatus,
+    PortalError,
+    Response,
+)
 from njupt_autologin.credentials import Credentials
 
 
@@ -59,14 +66,48 @@ class ProtocolTests(unittest.TestCase):
         client._request = lambda *_args, **_kwargs: Response(302, "", "http://10.10.244.11/a79.htm", b"")
         self.assertEqual(client.probe().state, "portal_detected")
 
+    def test_offline_portal_overrides_allowlisted_connectivity_response(self):
+        client = object.__new__(CampusClient)
+        client.probe = Mock(return_value=NetworkStatus("internet_ok", 204))
+        client._session_state = Mock(return_value="offline")
+        client._external_access_status = Mock()
+        status = client.campus_status()
+        self.assertEqual(status.state, "portal_detected")
+        self.assertEqual(status.portal_host, "p.njupt.edu.cn")
+        client._external_access_status.assert_not_called()
+
+    def test_online_portal_still_requires_regular_external_https(self):
+        client = object.__new__(CampusClient)
+        client.probe = Mock(return_value=NetworkStatus("internet_ok", 204))
+        client._session_state = Mock(return_value="online")
+        client._external_access_status = Mock(return_value=NetworkStatus("network_unavailable"))
+        self.assertEqual(client.campus_status().state, "network_unavailable")
+
+    def test_login_reports_stale_online_ip_record(self):
+        client = object.__new__(CampusClient)
+        client.local_ip = "10.0.0.2"
+        client.authentication_status = Mock(return_value=NetworkStatus("portal_detected", 302))
+        client._require_route = Mock()
+        client._status_data = Mock(return_value={"result": 0, "ss4": "000000000000", "vid": 0})
+        client._config = Mock(return_value={
+            "no_filter_accandpwd": 0,
+            "rcn": "nonce",
+            "program_index": "program",
+            "page_index": "page",
+            "enable_r3": 0,
+        })
+        client._jsonp = Mock(return_value={"result": 0, "ret_code": 2})
+        with (
+            patch("njupt_autologin.client.socket.gethostbyname", return_value="10.10.244.11"),
+            self.assertRaisesRegex(AuthenticationError, "online record"),
+        ):
+            client.login(Credentials("student", "fake-pass", "mobile"))
+
     def test_logout_verifies_portal_transition(self):
         client = object.__new__(CampusClient)
         client.interface = "ens33"
         client.timeout = 5
-        client.probe = Mock(side_effect=(
-            NetworkStatus("internet_ok", 204),
-            NetworkStatus("portal_detected", 302, "10.10.244.11"),
-        ))
+        client._session_state = Mock(side_effect=("online", "offline"))
         client._request = Mock(return_value=Response(200, "text/html", "", b"failure marker"))
         with patch("njupt_autologin.client.time.sleep"):
             self.assertEqual(client.logout(), "logout_success")
@@ -76,7 +117,7 @@ class ProtocolTests(unittest.TestCase):
 
     def test_logout_is_idempotent_when_portal_is_already_present(self):
         client = object.__new__(CampusClient)
-        client.probe = Mock(return_value=NetworkStatus("portal_detected", 302))
+        client._session_state = Mock(return_value="offline")
         client._request = Mock()
         self.assertEqual(client.logout(), "already_offline")
         client._request.assert_not_called()
@@ -137,8 +178,9 @@ class AutoInterfaceTests(unittest.TestCase):
             patch.object(CampusClient, "_require_route"),
             patch.object(CampusClient, "probe", probe),
             patch.object(CampusClient, "_status_data", status_data),
+            patch.object(CampusClient, "_external_access_status", return_value=NetworkStatus("internet_ok", 200)),
         )
-        with common[0], common[1], common[2], common[3], common[4]:
+        with common[0], common[1], common[2], common[3], common[4], common[5]:
             client = CampusClient("auto")
         self.assertEqual(client.interface, "ens33")
 
@@ -160,12 +202,13 @@ class AutoInterfaceTests(unittest.TestCase):
             patch.object(CampusClient, "_require_route"),
             patch.object(CampusClient, "probe", probe),
             patch.object(CampusClient, "_status_data", status_data),
+            patch.object(CampusClient, "_external_access_status", return_value=NetworkStatus("internet_ok", 200)),
         ):
             client = CampusClient("auto", prefer_portal=True)
         self.assertEqual(client.interface, "ens38")
 
     def test_online_campus_interface_returns_route_preferred_session(self):
-        def probe(client, attempts=2):
+        def campus_status(client, attempts=2):
             del attempts
             state = "internet_ok" if client.interface == "ens33" else "portal_detected"
             return NetworkStatus(state)
@@ -174,10 +217,22 @@ class AutoInterfaceTests(unittest.TestCase):
             patch.object(CampusClient, "_default_interfaces", return_value=["ens33", "ens38"]),
             patch.object(CampusClient, "_interface_ip", return_value="10.0.0.2"),
             patch.object(CampusClient, "_require_route"),
-            patch.object(CampusClient, "probe", probe),
-            patch.object(CampusClient, "_status_data", return_value={"result": 1}),
+            patch.object(CampusClient, "campus_status", campus_status),
         ):
             self.assertEqual(CampusClient.online_campus_interface(), "ens33")
+
+    def test_online_campus_interface_rejects_offline_portal_session(self):
+        with (
+            patch.object(CampusClient, "_default_interfaces", return_value=["ens33"]),
+            patch.object(CampusClient, "_interface_ip", return_value="10.0.0.2"),
+            patch.object(CampusClient, "_require_route"),
+            patch.object(
+                CampusClient,
+                "campus_status",
+                return_value=NetworkStatus("portal_detected", 204, "p.njupt.edu.cn"),
+            ),
+        ):
+            self.assertIsNone(CampusClient.online_campus_interface())
 
     def test_auto_rejects_ambiguous_online_interfaces(self):
         with (
@@ -197,6 +252,7 @@ class AutoInterfaceTests(unittest.TestCase):
             patch.object(CampusClient, "_require_route"),
             patch.object(CampusClient, "probe", return_value=NetworkStatus("internet_ok", 204)),
             patch.object(CampusClient, "_status_data", return_value={"result": 1}),
+            patch.object(CampusClient, "_external_access_status", return_value=NetworkStatus("internet_ok", 200)),
         ):
             client = CampusClient("auto")
         self.assertEqual(client.interface, "eth0")

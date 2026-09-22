@@ -19,7 +19,7 @@ class ImmediateLoginTests(unittest.TestCase):
     def test_portal_authenticates_and_saves_credentials(self):
         client = Mock()
         client.interface = "ens33"
-        client.probe.return_value = NetworkStatus("portal_detected", 302, "10.10.244.11")
+        client.authentication_status.return_value = NetworkStatus("portal_detected", 302, "10.10.244.11")
         client.login.return_value = "login_success"
         credentials = Credentials("student", "secret", "mobile")
         credential_factory = Mock(return_value=credentials)

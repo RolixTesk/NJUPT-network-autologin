@@ -22,7 +22,7 @@ class LoginPolicyTests(unittest.TestCase):
     def test_force_skips_global_online_session_check(self):
         client = Mock()
         client.interface = "ens38"
-        client.probe.return_value.state = "internet_ok"
+        client.authentication_status.return_value.state = "internet_ok"
         with (
             patch("njupt_autologin.cli.CampusClient.online_campus_interface") as global_check,
             patch("njupt_autologin.cli.CampusClient", return_value=client),

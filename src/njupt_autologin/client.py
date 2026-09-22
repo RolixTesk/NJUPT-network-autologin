@@ -21,6 +21,8 @@ from .credentials import Credentials
 PORTAL_HOST = "p.njupt.edu.cn"
 PORTAL_IP = "10.10.244.11"
 CONNECTIVITY_HOST = "connectivitycheck.gstatic.com"
+EXTERNAL_CHECK_HOST = "www.baidu.com"
+EXTERNAL_CHECK_PATH = "/favicon.ico"
 USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64; rv:150.0) Gecko/20100101 Firefox/150.0"
 JS_VERSION = "4.5"
 MAX_RESPONSE = 262_144
@@ -101,18 +103,18 @@ class CampusClient:
         for interface in candidates:
             try:
                 client = cls(interface=interface, timeout=min(timeout, 4.0))
-                status = client.probe(attempts=1)
+                try:
+                    status = client.campus_status(attempts=1)
+                    campus_confirmed = True
+                except (NetworkError, PortalError):
+                    status = client.probe(attempts=1)
+                    campus_confirmed = False
                 if status.state == "portal_detected" and status.portal_host in (PORTAL_HOST, PORTAL_IP):
                     score = 5 if prefer_portal else 4
                 elif status.state == "portal_detected":
                     score = 2
                 elif status.state == "internet_ok":
-                    try:
-                        client._status_data()
-                    except (NetworkError, PortalError):
-                        score = 1
-                    else:
-                        score = 4 if prefer_portal else 5
+                    score = (4 if prefer_portal else 5) if campus_confirmed else 1
                 else:
                     score = 0
                 scored.append((score, interface))
@@ -132,9 +134,8 @@ class CampusClient:
         for interface in cls._default_interfaces():
             try:
                 client = cls(interface=interface, timeout=min(timeout, 4.0))
-                if client.probe(attempts=1).state != "internet_ok":
+                if client.campus_status(attempts=1).state != "internet_ok":
                     continue
-                client._status_data()
             except (NetworkError, PortalError):
                 continue
             return interface
@@ -243,6 +244,45 @@ class CampusClient:
             return NetworkStatus("portal_detected", 200)
         return NetworkStatus("unexpected_response", response.status)
 
+    def _session_state(self) -> str:
+        result = str(self._status_data().get("result"))
+        if result in ("1", "ok"):
+            return "online"
+        if result == "0":
+            return "offline"
+        raise PortalError("portal returned an unknown session state")
+
+    def _external_access_status(self) -> NetworkStatus:
+        """Check a regular HTTPS site that is not a captive-portal connectivity exception."""
+        try:
+            response = self._request(EXTERNAL_CHECK_HOST, 443, EXTERNAL_CHECK_PATH, secure=True)
+        except (NetworkError, PortalError):
+            return NetworkStatus("network_unavailable")
+        if response.status == 200:
+            return NetworkStatus("internet_ok", 200)
+        return NetworkStatus("unexpected_response", response.status)
+
+    def _status_with_session(self, connectivity: NetworkStatus, session: str) -> NetworkStatus:
+        if session == "offline":
+            return NetworkStatus("portal_detected", connectivity.http_status, PORTAL_HOST)
+        if connectivity.state != "internet_ok":
+            return connectivity
+        return self._external_access_status()
+
+    def campus_status(self, attempts: int = 2) -> NetworkStatus:
+        """Require both an online NJUPT session and ordinary external HTTPS access."""
+        connectivity = self.probe(attempts=attempts)
+        return self._status_with_session(connectivity, self._session_state())
+
+    def authentication_status(self, attempts: int = 2) -> NetworkStatus:
+        """Return campus status, falling back to connectivity on non-NJUPT networks."""
+        connectivity = self.probe(attempts=attempts)
+        try:
+            session = self._session_state()
+        except (NetworkError, PortalError):
+            return connectivity
+        return self._status_with_session(connectivity, session)
+
     @staticmethod
     def _parse_jsonp(body: bytes, callback: str) -> dict[str, object]:
         text = body.decode("utf-8", errors="strict").strip()
@@ -321,7 +361,7 @@ class CampusClient:
         ]
 
     def login(self, credentials: Credentials) -> str:
-        initial = self.probe()
+        initial = self.authentication_status()
         if initial.state == "internet_ok":
             return "already_online"
         if initial.state != "portal_detected":
@@ -341,20 +381,21 @@ class CampusClient:
         )
         if str(result.get("result")) not in ("1", "ok"):
             # Never include server messages: some deployments echo credentials.
+            if str(result.get("ret_code")) == "2":
+                raise AuthenticationError(
+                    "portal still has an online record for this IP, but external access is unavailable"
+                )
             raise AuthenticationError("portal rejected the credentials or account state")
         for delay in (0, 2, 4):
             if delay:
                 time.sleep(delay)
-            if self.probe(attempts=1).state == "internet_ok":
+            if self.authentication_status(attempts=1).state == "internet_ok":
                 return "login_success"
         raise AuthenticationError("portal accepted login, but internet check still fails")
 
     def logout(self) -> str:
-        initial = self.probe()
-        if initial.state == "portal_detected":
+        if self._session_state() == "offline":
             return "already_offline"
-        if initial.state != "internet_ok":
-            raise NetworkError(f"cannot log out from state {initial.state}")
         response = self._request(
             PORTAL_IP, 801,
             "/eportal/?c=ACSetting&a=Logout&ver=1.0&url=drappall",
@@ -363,9 +404,9 @@ class CampusClient:
         if response.status != 200:
             raise PortalError(f"logout endpoint returned HTTP {response.status}")
         # The configured AC endpoint returns a failure marker even when logout
-        # succeeds asynchronously, so only the bound-interface probe is authoritative.
+        # succeeds asynchronously, so the bound-interface Portal session is authoritative.
         for delay in (0.5, 1.0, 2.0, 4.0):
             time.sleep(delay)
-            if self.probe(attempts=1).state == "portal_detected":
+            if self._session_state() == "offline":
                 return "logout_success"
         raise PortalError("logout request completed, but the interface remains online")

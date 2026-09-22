@@ -116,7 +116,7 @@ def main(argv: list[str] | None = None) -> int:
             _emit(args.json, result, interface=client.interface, timer_paused=timer_was_active)
             return 0
         if args.command == "status":
-            status = client.probe()
+            status = client.authentication_status()
             _emit(
                 args.json, status.state, interface=client.interface,
                 http_status=status.http_status, portal_host=status.portal_host,
@@ -128,7 +128,7 @@ def main(argv: list[str] | None = None) -> int:
                 "unexpected_response": EXIT_NETWORK,
             }[status.state]
         # Check first so an already connected client needs no credential access.
-        current = client.probe()
+        current = client.authentication_status()
         if current.state == "internet_ok":
             _emit(args.json, "already_online", interface=client.interface)
             return 0
