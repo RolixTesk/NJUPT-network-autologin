@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ..client import CampusClient, NetworkError
+from ..errors import NetworkError
+from ..network_interfaces import default_interfaces
 from ..service import (
     enable_linger,
     install_service,
@@ -21,7 +22,7 @@ class LinuxServiceAdapter:
 
     def available_interfaces(self) -> tuple[str, ...]:
         try:
-            return tuple(CampusClient._default_interfaces())
+            return tuple(default_interfaces())
         except NetworkError:
             return ()
 

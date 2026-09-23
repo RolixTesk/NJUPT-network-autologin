@@ -1,8 +1,8 @@
 # 校园网自动登录
 
-该程序在 Linux 和 Windows 上自动选择校园网接口。登录状态会同时核对 Portal 会话状态、国内 204 连通性探测和普通国内 HTTPS；仅有单个被 Portal 白名单放行的响应不会被判定为已登录。Portal 的会话接口可能在脚本登录成功后仍错误报告离线，因此“小米 204 + 百度 HTTPS”均成功时，以实际外网连通性为准。如果确认需要认证，则读取本地凭据、请求登录并复核联网；已联网时直接退出。网络请求同时绑定所选接口及其当前 IPv4 地址。
+该程序在 Linux 和 Windows 上自动选择校园网接口。登录状态会同时核对 Portal 会话状态、国内 204 连通性探测和普通国内 HTTPS。单一 204 响应可能是 Portal 放行的特例，不足以判定在线；但 204 与普通 HTTPS 均成功时，实际外网证据优先于可能滞后的 Portal `offline` 标记。如果任一实际联网检查失败且 Portal 报告离线，则按待认证处理。如果确认需要认证，则读取本地凭据、请求登录并复核联网；已确认在线时直接退出。网络请求同时绑定所选接口及其当前 IPv4 地址。
 
-自动选择会读取 IPv4 默认路由接口。只有一个候选时直接使用；存在多个候选时，程序分别执行不带凭据的联网及 NJUPT Portal 状态探测。登录命令会先检查全部候选：只要确认任一接口已有 NJUPT 在线会话，就立即成功退出且不读取凭据，避免同一 PC 占用多个设备名额。
+自动选择会读取 IPv4 默认路由接口。Windows 上会把 `Find-NetRoute` 为普通未绑定流量选出的实际出口放在首位，避免相同 metric 的多网卡被程序自行按接口编号排成另一顺序。只有一个候选时直接使用；存在多个候选时，程序分别执行不带凭据的联网及 NJUPT Portal 状态探测。登录命令会先检查全部候选：只要确认任一接口已有 NJUPT 在线会话，就立即成功退出且不读取凭据，避免同一 PC 占用多个设备名额。
 
 确需认证另一个 Portal 接口时使用：
 
@@ -53,7 +53,7 @@ printf '%s\n' '{"username":"example","password":"example","operator":"mobile"}' 
 
 ```bash
 python3 packaging/debian/build_deb.py
-sudo apt install ./dist/njupt-autologin_0.9.2_all.deb
+sudo apt install ./dist/njupt-autologin_0.9.3_all.deb
 ```
 
 软件包安装 CLI、原生桌面 GUI、桌面菜单入口以及 systemd 用户服务和定时器。`apt` 会自动处理 `python3`、`python3-tk`、`iproute2`、`systemd` 和 `pkexec` 前置依赖。安装后可以通过 GUI 配置并启用服务，也可以直接执行：
@@ -84,10 +84,12 @@ Windows 安装包与便携版均包含 Python 和 Tk 运行时，使用时不需
 
 ```powershell
 py -3.12 -m pip install pyinstaller
-py -3.12 packaging\windows\build_windows.py
+py -3.12 packaging\windows\build_windows.py --architecture x64
 ```
 
-脚本始终生成独立的便携版 ZIP；检测到 Inno Setup 6 时还会生成当前用户安装包。Windows 发布物只包含公共模块与 Windows 服务适配器，不包含 systemd/Linux 服务源码；Debian 包同样不会包含 Windows 适配器源码。
+`--architecture` 用于核对构建机与目标一致，不执行交叉编译；ARM64 发布物必须在 ARM64 Windows 和 ARM64 Python 上使用 `--architecture arm64` 构建。脚本始终生成带架构名的便携版 ZIP；检测到 Inno Setup 6 时还会生成同架构的当前用户安装包。仓库的 Release 工作流在原生 x64 与 ARM64 runner 上分别构建这两组产物，并继续提供架构无关的 Debian `all` 包。
+
+Windows 发布物只包含公共模块与 Windows 服务适配器，不包含 systemd/Linux 服务源码；Debian 包同样不会包含 Windows 适配器源码。
 
 ## 无人值守运行
 
@@ -145,7 +147,7 @@ njupt-autologin uninstall-service --remove-credentials
 
 ## 状态与边界
 
-`status` 以退出码 `0` 表示联网、`2` 表示 Portal、`3` 表示网络不可用；`login` 成功或已联网返回 `0`，认证失败返回 `4`，配置错误返回 `5`。加 `--json` 可输出状态对象。Portal 的配置或字段变更会使程序拒绝尝试登录，需重新分析网页协议。
+`status` 以退出码 `0` 表示 204 和普通 HTTPS 均已确认联网、`2` 表示实际外网检查未通过且 Portal 要求认证、`3` 表示网络不可用。Portal 的 `offline` 标记不会覆盖两项已成功的实际联网证据。`login` 成功或已确认在线返回 `0`，认证失败返回 `4`，配置错误返回 `5`。加 `--json` 可输出状态对象。Portal 的配置或字段变更会使程序拒绝尝试登录，需重新分析网页协议。
 
 本项目在当前校园网环境中验证了脚本登录、浏览器原生登录和 AC 端点注销。脚本与浏览器登录均能得到 HTTP 204；CLI/GUI 注销会在确认接口重新出现 Portal 后才报告成功。Portal 原生网页注销在浏览器自身登录后仍返回失败。使用不同运营商、不同账户类型或不同校园网部署前应另行验证。
 

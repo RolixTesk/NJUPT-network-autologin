@@ -10,33 +10,34 @@ from njupt_autologin.gui_actions import (
     login_now,
     service_status_items,
 )
+from njupt_autologin.operations import LoginOutcome
 from njupt_autologin.service import ServiceStatus
 
 
 class ImmediateLoginTests(unittest.TestCase):
     def test_existing_campus_session_does_not_read_credentials(self):
         credential_factory = Mock()
-        with patch("njupt_autologin.gui_actions.CampusClient.online_campus_interface", return_value="ens33"):
+        with patch(
+            "njupt_autologin.gui_actions.login_once",
+            return_value=LoginOutcome("already_online", "ens33"),
+        ):
             message = login_now("auto", credential_factory)
         credential_factory.assert_not_called()
         self.assertIn("ens33", message)
         self.assertIn("未重复", message)
 
     def test_portal_authenticates_and_saves_credentials(self):
-        client = Mock()
-        client.interface = "ens33"
-        client.authentication_status.return_value = NetworkStatus("portal_detected", 302, "10.10.244.11")
-        client.login.return_value = "login_success"
         credentials = Credentials("student", "secret", "mobile")
         credential_factory = Mock(return_value=credentials)
         with (
-            patch("njupt_autologin.gui_actions.CampusClient", return_value=client) as client_class,
+            patch(
+                "njupt_autologin.gui_actions.login_once",
+                return_value=LoginOutcome("login_success", "ens33", credentials),
+            ) as login,
             patch("njupt_autologin.gui_actions.save_credentials") as save,
         ):
-            client_class.online_campus_interface.return_value = None
             message = login_now("auto", credential_factory)
-        credential_factory.assert_called_once_with()
-        client.login.assert_called_once_with(credentials)
+        login.assert_called_once_with("auto", credential_factory)
         save.assert_called_once_with(credentials)
         self.assertIn("登录成功", message)
 

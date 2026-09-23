@@ -12,6 +12,9 @@ captures/
 # Local agent work records
 .planning/
 agent.md
+docs/phase-*.md
+docs/internal/
+docs/private/
 
 # Local package builds
 build/

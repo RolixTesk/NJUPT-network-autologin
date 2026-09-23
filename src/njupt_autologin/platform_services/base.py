@@ -16,7 +16,7 @@ class ServiceStatus:
     installed: bool
     enabled: bool
     active: bool
-    linger: bool
+    startup_ready: bool
 
 
 class DesktopServiceAdapter(Protocol):

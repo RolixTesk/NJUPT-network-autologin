@@ -11,6 +11,7 @@ from pathlib import Path
 
 from .client import AuthenticationError, CampusClient, NetworkError, PortalError
 from .credentials import CredentialError, Credentials, load_credentials, save_credentials
+from .operations import login_once
 from .platform_services import ServiceError, load_service_adapter
 
 
@@ -124,15 +125,21 @@ def main(argv: list[str] | None = None) -> int:
             if not load_service_adapter().scheduled_login_allowed():
                 _emit(args.json, "service_paused")
                 return 0
-        if args.command == "login" and not args.force:
-            online_interface = CampusClient.online_campus_interface(args.timeout)
-            if online_interface:
-                _emit(args.json, "already_online", interface=online_interface)
-                return 0
+        if args.command == "login":
+            outcome = login_once(
+                args.interface,
+                lambda: load_credentials(
+                    path=args.credentials_file,
+                    stdin=args.credentials_stdin,
+                ),
+                timeout=args.timeout,
+                force=args.force,
+            )
+            _emit(args.json, outcome.state, interface=outcome.interface)
+            return 0
         client = CampusClient(
             interface=args.interface,
             timeout=args.timeout,
-            prefer_portal=args.command == "login" and args.force,
         )
         if args.command == "logout":
             services = load_service_adapter()
@@ -157,18 +164,7 @@ def main(argv: list[str] | None = None) -> int:
                 "network_unavailable": EXIT_NETWORK,
                 "unexpected_response": EXIT_NETWORK,
             }[status.state]
-        # Check first so an already connected client needs no credential access.
-        current = client.authentication_status()
-        if current.state == "internet_ok":
-            _emit(args.json, "already_online", interface=client.interface)
-            return 0
-        if current.state != "portal_detected":
-            _emit(args.json, current.state, interface=client.interface)
-            return EXIT_NETWORK
-        credentials = load_credentials(path=args.credentials_file, stdin=args.credentials_stdin)
-        result = client.login(credentials)
-        _emit(args.json, result, interface=client.interface)
-        return 0
+        raise ValueError(f"unsupported command: {args.command}")
     except (CredentialError, ServiceError, ValueError, json.JSONDecodeError) as exc:
         print(f"Configuration error: {exc}", file=sys.stderr)
         return EXIT_CONFIG

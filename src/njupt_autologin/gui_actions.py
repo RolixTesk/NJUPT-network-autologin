@@ -5,8 +5,9 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from .client import CampusClient, NetworkError
+from .client import CampusClient
 from .credentials import Credentials, save_credentials
+from .operations import login_once
 from .platform_services.base import ServiceStatus
 
 
@@ -43,21 +44,13 @@ def connection_status_text(snapshot: ConnectionSnapshot) -> tuple[str, str, str]
 
 def login_now(interface: str, credential_factory: Callable[[], Credentials]) -> str:
     """Log in only when no existing NJUPT session can be found."""
-    online_interface = CampusClient.online_campus_interface()
-    if online_interface:
-        return f"校园网已经在线（接口 {online_interface}），未重复提交登录。"
-    client = CampusClient(interface=interface, prefer_portal=True)
-    current = client.authentication_status()
-    if current.state == "internet_ok":
-        return f"网络已经在线（接口 {client.interface}），未重复提交登录。"
-    if current.state != "portal_detected":
-        raise NetworkError(f"cannot authenticate from state {current.state}")
-    credentials = credential_factory()
-    result = client.login(credentials)
-    if result == "login_success":
-        save_credentials(credentials)
-        return f"校园网登录成功（接口 {client.interface}）。"
-    return f"校园网已经在线（接口 {client.interface}）。"
+    outcome = login_once(interface, credential_factory)
+    if outcome.state == "login_success":
+        if outcome.credentials is None:
+            raise RuntimeError("login outcome omitted the credentials used")
+        save_credentials(outcome.credentials)
+        return f"校园网登录成功（接口 {outcome.interface}）。"
+    return f"校园网已经在线（接口 {outcome.interface}），未重复提交登录。"
 
 
 def service_status_items(status: ServiceStatus) -> tuple[tuple[str, str], ...]:
@@ -66,11 +59,17 @@ def service_status_items(status: ServiceStatus) -> tuple[tuple[str, str], ...]:
         return (
             ("未安装", "muted"),
             ("未启用", "muted"),
-            ("已启用" if status.linger else "未启用", "success" if status.linger else "muted"),
+            (
+                "已启用" if status.startup_ready else "未启用",
+                "success" if status.startup_ready else "muted",
+            ),
         )
     timer = "运行中" if status.active else ("已启用" if status.enabled else "未启用")
     return (
         ("已安装", "success"),
         (timer, "success" if status.enabled else "warning"),
-        ("已启用" if status.linger else "未启用", "success" if status.linger else "warning"),
+        (
+            "已启用" if status.startup_ready else "未启用",
+            "success" if status.startup_ready else "warning",
+        ),
     )

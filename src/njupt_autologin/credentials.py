@@ -70,6 +70,8 @@ class Credentials:
         values: dict[str, str] = {}
         for line in raw.splitlines():
             line = line.strip()
+            # The original local key file also contains VM credentials. Stop at
+            # that section so a later password can never replace the campus one.
             if line.lower().startswith("vm ubuntu"):
                 break
             if ":" not in line and "：" not in line:
@@ -119,6 +121,8 @@ def save_credentials(credentials: Credentials, path: Path | None = None) -> Path
         os.chmod(target.parent, 0o700)
     fd, temporary = tempfile.mkstemp(prefix=".credentials-", dir=target.parent)
     try:
+        # A same-directory temporary file makes os.replace atomic. Flush both
+        # Python and kernel buffers before publishing a credential update.
         with os.fdopen(fd, "w", encoding="utf-8") as stream:
             json.dump({"username": credentials.username, "password": credentials.password, "operator": credentials.operator}, stream, ensure_ascii=False)
             stream.write("\n")
@@ -128,6 +132,8 @@ def save_credentials(credentials: Credentials, path: Path | None = None) -> Path
             os.chmod(temporary, 0o600)
         os.replace(temporary, target)
         if sys.platform == "win32":
+            # Windows does not apply the POSIX modes above; fail closed if an
+            # explicit current-user ACL cannot be installed.
             _secure_windows_file(target)
     finally:
         if os.path.exists(temporary):

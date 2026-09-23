@@ -114,7 +114,7 @@ class ServiceTests(unittest.TestCase):
         self.assertTrue(status.installed)
         self.assertTrue(status.enabled)
         self.assertFalse(status.active)
-        self.assertTrue(status.linger)
+        self.assertTrue(status.startup_ready)
 
 
 if __name__ == "__main__":

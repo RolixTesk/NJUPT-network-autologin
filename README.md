@@ -13,20 +13,22 @@
 
 ## 下载
 
-从 [Releases](https://github.com/RolixTesk/NJUPT-network-autologin/releases/latest) 下载最新版：
+从 [Releases](https://github.com/RolixTesk/NJUPT-network-autologin/releases/latest) 下载最新版。后续由仓库工作流发布的版本同时提供原生 x64 与 ARM64 Windows 构建：
 
 | 平台 | 文件 | 用途 |
 | --- | --- | --- |
-| Windows 11 | `njupt-autologin-windows-0.9.2-x64-setup.exe` | 推荐，包含安装与卸载程序 |
-| Windows 11 | `njupt-autologin-windows-0.9.2-x64-portable.zip` | 解压后直接运行 |
-| Debian/Ubuntu | `njupt-autologin_0.9.2_all.deb` | 使用 `apt` 安装 |
+| Windows 11 x64 | `njupt-autologin-windows-<版本>-x64-setup.exe` | x64 原生安装版 |
+| Windows 11 x64 | `njupt-autologin-windows-<版本>-x64-portable.zip` | x64 原生便携版 |
+| Windows 11 ARM64 | `njupt-autologin-windows-<版本>-arm64-setup.exe` | ARM64 原生安装版 |
+| Windows 11 ARM64 | `njupt-autologin-windows-<版本>-arm64-portable.zip` | ARM64 原生便携版 |
+| Debian/Ubuntu | `njupt-autologin_<版本>_all.deb` | 与 CPU 架构无关，使用 `apt` 安装 |
 
 Windows 安装程序可选择把命令行工具加入当前用户 `PATH`。程序已包含 Python 和 Tk 运行时，不需要另外安装依赖。
 
 Debian/Ubuntu 安装示例：
 
 ```bash
-sudo apt install ./njupt-autologin_0.9.2_all.deb
+sudo apt install ./njupt-autologin_0.9.3_all.deb
 ```
 
 ## 使用
@@ -48,7 +50,7 @@ njupt-autologin uninstall-service
 njupt-autologin -help
 ```
 
-更完整的安装、配置、构建和故障说明见 [使用文档](docs/usage.md)。
+更完整的安装、配置、构建和故障说明见 [使用文档](docs/usage.md)；模块边界、已知结构问题与效率改进方向见 [源码结构与代码审阅](docs/source-analysis.md)。
 
 ## 适用范围
 

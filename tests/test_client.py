@@ -1,4 +1,5 @@
 import subprocess
+import threading
 import unittest
 from unittest.mock import Mock, patch
 
@@ -11,6 +12,7 @@ from njupt_autologin.client import (
     Response,
 )
 from njupt_autologin.credentials import Credentials
+from njupt_autologin.network_interfaces import default_interfaces, interface_ip
 
 
 class CredentialTests(unittest.TestCase):
@@ -76,12 +78,15 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(status.portal_host, "p.njupt.edu.cn")
         client._external_access_status.assert_called_once_with()
 
-    def test_domestic_connectivity_overrides_stale_offline_session_marker(self):
+    def test_full_connectivity_wins_when_portal_session_marker_is_stale(self):
         client = object.__new__(CampusClient)
         client.probe = Mock(return_value=NetworkStatus("internet_ok", 204))
         client._session_state = Mock(return_value="offline")
         client._external_access_status = Mock(return_value=NetworkStatus("internet_ok", 200))
-        self.assertEqual(client.campus_status().state, "internet_ok")
+        status = client.campus_status()
+        self.assertEqual(status.state, "internet_ok")
+        self.assertEqual(status.http_status, 200)
+        client._external_access_status.assert_called_once_with()
 
     def test_online_portal_still_requires_regular_external_https(self):
         client = object.__new__(CampusClient)
@@ -93,10 +98,8 @@ class ProtocolTests(unittest.TestCase):
     def test_login_cleans_one_stale_online_ip_record_and_retries(self):
         client = object.__new__(CampusClient)
         client.local_ip = "10.0.0.2"
-        client.authentication_status = Mock(side_effect=(
-            NetworkStatus("portal_detected", 302),
-            NetworkStatus("internet_ok", 200),
-        ))
+        client.authentication_status = Mock(return_value=NetworkStatus("portal_detected", 302))
+        client._internet_access_status = Mock(return_value=NetworkStatus("internet_ok", 200))
         client._require_route = Mock()
         client._status_data = Mock(return_value={"result": 0, "ss4": "000000000000", "vid": 0})
         client._config = Mock(return_value={
@@ -115,6 +118,19 @@ class ProtocolTests(unittest.TestCase):
             self.assertEqual(client.login(Credentials("student", "fake-pass", "mobile")), "login_success")
         self.assertEqual(client._jsonp.call_count, 2)
         client._request.assert_called_once()
+
+    def test_accepted_login_uses_connectivity_when_session_marker_stays_offline(self):
+        client = object.__new__(CampusClient)
+        client.local_ip = "10.0.0.2"
+        client.authentication_status = Mock(return_value=NetworkStatus("portal_detected", 204))
+        client._require_route = Mock()
+        client._submit_login = Mock(return_value={"result": 1})
+        client._internet_access_status = Mock(return_value=NetworkStatus("internet_ok", 200))
+        with patch("njupt_autologin.client.socket.gethostbyname", return_value="10.10.244.11"):
+            result = client.login(Credentials("student", "fake-pass", "mobile"))
+        self.assertEqual(result, "login_success")
+        client.authentication_status.assert_called_once_with()
+        client._internet_access_status.assert_called_once_with(attempts=1)
 
     def test_login_does_not_repeat_stale_cleanup(self):
         client = object.__new__(CampusClient)
@@ -158,17 +174,23 @@ class ProtocolTests(unittest.TestCase):
 
 class AutoInterfaceTests(unittest.TestCase):
     def test_windows_route_and_address_share_one_snapshot(self):
-        snapshot = [
-            {"name": "Ethernet1", "address": "10.161.209.225"},
-            {"name": "Ethernet0", "address": "10.161.209.221"},
-        ]
+        snapshot = {
+            "preferred": "Ethernet0",
+            "items": [
+                {"name": "Ethernet1", "address": "10.161.209.225"},
+                {"name": "Ethernet0", "address": "10.161.209.221"},
+            ],
+        }
         with (
-            patch("njupt_autologin.client.sys.platform", "win32"),
-            patch("njupt_autologin.client._WINDOWS_NETWORK_CACHE", None),
-            patch("njupt_autologin.client._powershell_json", return_value=snapshot) as powershell,
+            patch("njupt_autologin.network_interfaces.sys.platform", "win32"),
+            patch("njupt_autologin.network_interfaces._WINDOWS_NETWORK_CACHE", None),
+            patch(
+                "njupt_autologin.network_interfaces._powershell_json",
+                return_value=snapshot,
+            ) as powershell,
         ):
-            self.assertEqual(CampusClient._default_interfaces(), ["Ethernet1", "Ethernet0"])
-            self.assertEqual(CampusClient._interface_ip("Ethernet1"), "10.161.209.225")
+            self.assertEqual(default_interfaces(), ["Ethernet0", "Ethernet1"])
+            self.assertEqual(interface_ip("Ethernet1"), "10.161.209.225")
         powershell.assert_called_once()
 
     def test_default_interfaces_are_unique_and_sorted_by_metric(self):
@@ -178,13 +200,13 @@ class AutoInterfaceTests(unittest.TestCase):
             "default via 10.0.0.2 dev ens33 metric 200\n"
         )
         result = subprocess.CompletedProcess([], 0, output, "")
-        with patch("njupt_autologin.client.subprocess.run", return_value=result):
-            self.assertEqual(CampusClient._default_interfaces(), ["ens33", "wlan0"])
+        with patch("njupt_autologin.network_interfaces.subprocess.run", return_value=result):
+            self.assertEqual(default_interfaces(), ["ens33", "wlan0"])
 
     def test_auto_uses_the_only_default_interface(self):
         with (
-            patch.object(CampusClient, "_default_interfaces", return_value=["ens33"]),
-            patch.object(CampusClient, "_interface_ip", return_value="10.0.0.2"),
+            patch("njupt_autologin.client.default_interfaces", return_value=["ens33"]),
+            patch("njupt_autologin.client.interface_ip", return_value="10.0.0.2"),
             patch.object(CampusClient, "_require_route"),
         ):
             client = CampusClient("auto")
@@ -198,8 +220,14 @@ class AutoInterfaceTests(unittest.TestCase):
             return NetworkStatus("internet_ok", 204)
 
         with (
-            patch.object(CampusClient, "_default_interfaces", return_value=["wlan0", "ens33"]),
-            patch.object(CampusClient, "_interface_ip", side_effect=lambda interface: {"wlan0": "192.0.2.2", "ens33": "10.0.0.2"}[interface]),
+            patch("njupt_autologin.client.default_interfaces", return_value=["wlan0", "ens33"]),
+            patch(
+                "njupt_autologin.client.interface_ip",
+                side_effect=lambda interface: {
+                    "wlan0": "192.0.2.2",
+                    "ens33": "10.0.0.2",
+                }[interface],
+            ),
             patch.object(CampusClient, "_require_route"),
             patch.object(CampusClient, "probe", probe),
             patch.object(CampusClient, "_status_data", side_effect=PortalError("not campus")),
@@ -220,8 +248,8 @@ class AutoInterfaceTests(unittest.TestCase):
             raise PortalError("not online")
 
         common = (
-            patch.object(CampusClient, "_default_interfaces", return_value=["ens33", "ens38"]),
-            patch.object(CampusClient, "_interface_ip", return_value="10.0.0.2"),
+            patch("njupt_autologin.client.default_interfaces", return_value=["ens33", "ens38"]),
+            patch("njupt_autologin.client.interface_ip", return_value="10.0.0.2"),
             patch.object(CampusClient, "_require_route"),
             patch.object(CampusClient, "probe", probe),
             patch.object(CampusClient, "_status_data", status_data),
@@ -244,8 +272,8 @@ class AutoInterfaceTests(unittest.TestCase):
             raise PortalError("not online")
 
         with (
-            patch.object(CampusClient, "_default_interfaces", return_value=["ens33", "ens38"]),
-            patch.object(CampusClient, "_interface_ip", return_value="10.0.0.2"),
+            patch("njupt_autologin.client.default_interfaces", return_value=["ens33", "ens38"]),
+            patch("njupt_autologin.client.interface_ip", return_value="10.0.0.2"),
             patch.object(CampusClient, "_require_route"),
             patch.object(CampusClient, "probe", probe),
             patch.object(CampusClient, "_status_data", status_data),
@@ -261,8 +289,24 @@ class AutoInterfaceTests(unittest.TestCase):
             return NetworkStatus(state)
 
         with (
-            patch.object(CampusClient, "_default_interfaces", return_value=["ens33", "ens38"]),
-            patch.object(CampusClient, "_interface_ip", return_value="10.0.0.2"),
+            patch("njupt_autologin.client.default_interfaces", return_value=["ens33", "ens38"]),
+            patch("njupt_autologin.client.interface_ip", return_value="10.0.0.2"),
+            patch.object(CampusClient, "_require_route"),
+            patch.object(CampusClient, "campus_status", campus_status),
+        ):
+            self.assertEqual(CampusClient.online_campus_interface(), "ens33")
+
+    def test_online_campus_interface_probes_concurrently_but_preserves_route_order(self):
+        rendezvous = threading.Barrier(2, timeout=1)
+
+        def campus_status(client, attempts=2):
+            del attempts
+            rendezvous.wait()
+            return NetworkStatus("internet_ok")
+
+        with (
+            patch("njupt_autologin.client.default_interfaces", return_value=["ens33", "wlan0"]),
+            patch("njupt_autologin.client.interface_ip", return_value="10.0.0.2"),
             patch.object(CampusClient, "_require_route"),
             patch.object(CampusClient, "campus_status", campus_status),
         ):
@@ -275,8 +319,11 @@ class AutoInterfaceTests(unittest.TestCase):
             return NetworkStatus(state)
 
         with (
-            patch.object(CampusClient, "_default_interfaces", return_value=["ens33", "ens38", "wlan0"]),
-            patch.object(CampusClient, "_interface_ip", return_value="10.0.0.2"),
+            patch(
+                "njupt_autologin.client.default_interfaces",
+                return_value=["ens33", "ens38", "wlan0"],
+            ),
+            patch("njupt_autologin.client.interface_ip", return_value="10.0.0.2"),
             patch.object(CampusClient, "_require_route"),
             patch.object(CampusClient, "campus_status", campus_status),
         ):
@@ -284,8 +331,8 @@ class AutoInterfaceTests(unittest.TestCase):
 
     def test_online_campus_interface_rejects_offline_portal_session(self):
         with (
-            patch.object(CampusClient, "_default_interfaces", return_value=["ens33"]),
-            patch.object(CampusClient, "_interface_ip", return_value="10.0.0.2"),
+            patch("njupt_autologin.client.default_interfaces", return_value=["ens33"]),
+            patch("njupt_autologin.client.interface_ip", return_value="10.0.0.2"),
             patch.object(CampusClient, "_require_route"),
             patch.object(
                 CampusClient,
@@ -295,10 +342,41 @@ class AutoInterfaceTests(unittest.TestCase):
         ):
             self.assertIsNone(CampusClient.online_campus_interface())
 
+    def test_global_session_search_accepts_full_access_with_stale_offline_session(self):
+        with (
+            patch("njupt_autologin.client.default_interfaces", return_value=["Ethernet1"]),
+            patch("njupt_autologin.client.interface_ip", return_value="10.161.214.190"),
+            patch.object(CampusClient, "_require_route"),
+            patch.object(CampusClient, "probe", return_value=NetworkStatus("internet_ok", 204)),
+            patch.object(CampusClient, "_session_state", return_value="offline"),
+            patch.object(
+                CampusClient,
+                "_external_access_status",
+                return_value=NetworkStatus("internet_ok", 200),
+            ) as external,
+        ):
+            self.assertEqual(CampusClient.online_campus_interface(), "Ethernet1")
+        external.assert_called_once_with()
+
+    def test_global_session_search_rejects_allowlisted_access_only(self):
+        with (
+            patch("njupt_autologin.client.default_interfaces", return_value=["Ethernet1"]),
+            patch("njupt_autologin.client.interface_ip", return_value="10.161.214.190"),
+            patch.object(CampusClient, "_require_route"),
+            patch.object(CampusClient, "probe", return_value=NetworkStatus("internet_ok", 204)),
+            patch.object(CampusClient, "_session_state", return_value="offline"),
+            patch.object(
+                CampusClient,
+                "_external_access_status",
+                return_value=NetworkStatus("network_unavailable"),
+            ),
+        ):
+            self.assertIsNone(CampusClient.online_campus_interface())
+
     def test_auto_rejects_ambiguous_online_interfaces(self):
         with (
-            patch.object(CampusClient, "_default_interfaces", return_value=["wlan0", "eth0"]),
-            patch.object(CampusClient, "_interface_ip", return_value="192.0.2.2"),
+            patch("njupt_autologin.client.default_interfaces", return_value=["wlan0", "eth0"]),
+            patch("njupt_autologin.client.interface_ip", return_value="192.0.2.2"),
             patch.object(CampusClient, "_require_route"),
             patch.object(CampusClient, "probe", return_value=NetworkStatus("internet_ok", 204)),
             patch.object(CampusClient, "_status_data", side_effect=PortalError("not campus")),
@@ -308,8 +386,8 @@ class AutoInterfaceTests(unittest.TestCase):
 
     def test_auto_uses_route_order_when_both_interfaces_are_confirmed_campus(self):
         with (
-            patch.object(CampusClient, "_default_interfaces", return_value=["eth0", "wlan0"]),
-            patch.object(CampusClient, "_interface_ip", return_value="192.0.2.2"),
+            patch("njupt_autologin.client.default_interfaces", return_value=["eth0", "wlan0"]),
+            patch("njupt_autologin.client.interface_ip", return_value="192.0.2.2"),
             patch.object(CampusClient, "_require_route"),
             patch.object(CampusClient, "probe", return_value=NetworkStatus("internet_ok", 204)),
             patch.object(CampusClient, "_status_data", return_value={"result": 1}),

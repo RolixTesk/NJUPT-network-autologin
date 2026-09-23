@@ -8,8 +8,9 @@ import sys
 import time
 from pathlib import Path
 
-from ..client import CampusClient, NetworkError
 from ..credentials import default_path, load_credentials
+from ..errors import NetworkError
+from ..network_interfaces import default_interfaces, valid_interface_name
 from .base import ServiceError, ServiceStatus
 
 try:
@@ -106,7 +107,7 @@ class WindowsServiceAdapter:
 
     def available_interfaces(self) -> tuple[str, ...]:
         try:
-            return tuple(CampusClient._default_interfaces())
+            return tuple(default_interfaces())
         except NetworkError:
             return ()
 
@@ -121,7 +122,7 @@ class WindowsServiceAdapter:
         return ServiceStatus(installed, enabled, False, enabled)
 
     def install(self, interface: str, credential_path: Path | None = None) -> None:
-        if interface != "auto" and not CampusClient._valid_interface_name(interface):
+        if interface != "auto" and not valid_interface_name(interface):
             raise ServiceError("invalid interface name")
         credential = (credential_path or default_path()).expanduser().resolve()
         load_credentials(path=credential)
@@ -148,6 +149,8 @@ class WindowsServiceAdapter:
             return False
         marker = _pause_path()
         marker.parent.mkdir(parents=True, exist_ok=True)
+        # monotonic time resets on reboot, making one marker sufficient for the
+        # current boot without persisting a machine identifier or wall clock.
         marker.write_text(f"{time.monotonic():.6f}\n", encoding="ascii")
         return True
 

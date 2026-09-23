@@ -3,21 +3,19 @@
 from __future__ import annotations
 
 import base64
-import http.client
-import ipaddress
 import json
 import re
 import secrets
 import socket
-import ssl
-import subprocess
-import sys
-import threading
 import time
-from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlencode, urlsplit
 
 from .credentials import Credentials
+from .errors import AuthenticationError, NetworkError, PortalError
+from .network_interfaces import default_interfaces, interface_ip, require_route, valid_interface_name
+from .status_policy import NetworkStatus, status_with_session
+from .transport import BoundHttpTransport, Response
 
 
 PORTAL_HOST = "p.njupt.edu.cn"
@@ -27,99 +25,6 @@ EXTERNAL_CHECK_HOST = "www.baidu.com"
 EXTERNAL_CHECK_PATH = "/favicon.ico"
 USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64; rv:150.0) Gecko/20100101 Firefox/150.0"
 JS_VERSION = "4.5"
-MAX_RESPONSE = 262_144
-WINDOWS_NETWORK_CACHE_SECONDS = 5.0
-_WINDOWS_NETWORK_CACHE: tuple[float, list[dict[str, str]]] | None = None
-_WINDOWS_NETWORK_LOCK = threading.Lock()
-
-
-class NetworkError(RuntimeError):
-    pass
-
-
-class PortalError(RuntimeError):
-    pass
-
-
-class AuthenticationError(RuntimeError):
-    pass
-
-
-def _powershell_json(script: str, error: str) -> object:
-    encoded = base64.b64encode(
-        ("$ProgressPreference='SilentlyContinue';"
-         "[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false);" + script)
-        .encode("utf-16le")
-    ).decode("ascii")
-    try:
-        result = subprocess.run(
-            ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
-            check=True, capture_output=True, timeout=8,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-        return json.loads(result.stdout.decode("utf-8-sig"))
-    except (OSError, subprocess.SubprocessError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise NetworkError(error) from exc
-
-
-def _windows_network_snapshot() -> list[dict[str, str]]:
-    """Read default-route aliases and addresses once for a short GUI refresh cycle."""
-    global _WINDOWS_NETWORK_CACHE
-    with _WINDOWS_NETWORK_LOCK:
-        now = time.monotonic()
-        if _WINDOWS_NETWORK_CACHE is not None:
-            recorded, cached = _WINDOWS_NETWORK_CACHE
-            if now - recorded < WINDOWS_NETWORK_CACHE_SECONDS:
-                return [item.copy() for item in cached]
-        script = r"""
-$routes = @(Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction Stop |
-    Where-Object { $_.InterfaceAlias -and $_.InterfaceAlias -ne 'Loopback Pseudo-Interface 1' } |
-    Sort-Object @{Expression={$_.RouteMetric + $_.InterfaceMetric}}, ifIndex)
-$seen = @{}
-$items = @()
-foreach ($route in $routes) {
-    $name = [string]$route.InterfaceAlias
-    if ($seen.ContainsKey($name)) { continue }
-    $seen[$name] = $true
-    $address = Get-NetIPAddress -AddressFamily IPv4 -InterfaceAlias $name -ErrorAction SilentlyContinue |
-        Where-Object { $_.IPAddress -notlike '169.254.*' -and $_.AddressState -ne 'Duplicate' } |
-        Sort-Object @{Expression={if ($_.AddressState -eq 'Preferred') { 0 } else { 1 }}}, PrefixLength |
-        Select-Object -First 1 -ExpandProperty IPAddress
-    if ($address) { $items += [pscustomobject]@{name=$name; address=[string]$address} }
-}
-ConvertTo-Json -Compress -InputObject @($items)
-"""
-        value = _powershell_json(script, "cannot inspect default routes")
-        values = [value] if isinstance(value, dict) else value
-        if not isinstance(values, list):
-            raise NetworkError("cannot inspect default routes")
-        snapshot: list[dict[str, str]] = []
-        for item in values:
-            if not isinstance(item, dict):
-                raise NetworkError("cannot inspect default routes")
-            name, address = item.get("name"), item.get("address")
-            if not isinstance(name, str) or not isinstance(address, str):
-                raise NetworkError("cannot inspect default routes")
-            snapshot.append({"name": name, "address": address})
-        if not snapshot:
-            raise NetworkError("no IPv4 default-route interface is available")
-        _WINDOWS_NETWORK_CACHE = (now, snapshot)
-        return [item.copy() for item in snapshot]
-
-
-@dataclass(frozen=True)
-class Response:
-    status: int
-    content_type: str
-    location: str
-    body: bytes
-
-
-@dataclass(frozen=True)
-class NetworkStatus:
-    state: str
-    http_status: int | None = None
-    portal_host: str | None = None
 
 
 class CampusClient:
@@ -130,46 +35,20 @@ class CampusClient:
             raise ValueError("timeout must be between 0 and 60 seconds")
         if interface == "auto":
             interface = self._detect_interface(timeout, prefer_portal=prefer_portal)
-        if not self._valid_interface_name(interface):
+        if not valid_interface_name(interface):
             raise ValueError("invalid interface name")
         self.interface = interface
         self.timeout = timeout
-        self.local_ip = self._interface_ip(interface)
+        self.local_ip = interface_ip(interface)
+        self._transport = BoundHttpTransport(interface, self.local_ip, timeout)
         self._require_route("1.1.1.1")
-
-    @staticmethod
-    def _default_interfaces() -> list[str]:
-        if sys.platform == "win32":
-            return [item["name"] for item in _windows_network_snapshot()]
-        try:
-            result = subprocess.run(
-                ["ip", "-4", "-o", "route", "show", "default"],
-                check=True, capture_output=True, text=True, timeout=5,
-            )
-        except (OSError, subprocess.SubprocessError) as exc:
-            raise NetworkError("cannot inspect default routes") from exc
-        candidates: list[tuple[int, int, str]] = []
-        for order, line in enumerate(result.stdout.splitlines()):
-            device = re.search(r"\bdev (\S+)", line)
-            if not device or device.group(1) == "lo":
-                continue
-            metric = re.search(r"\bmetric (\d+)", line)
-            candidates.append((int(metric.group(1)) if metric else 0, order, device.group(1)))
-        interfaces: list[str] = []
-        for _metric, _order, interface in sorted(candidates):
-            if interface not in interfaces:
-                interfaces.append(interface)
-        if not interfaces:
-            raise NetworkError("no IPv4 default-route interface is available")
-        return interfaces
 
     @classmethod
     def _detect_interface(cls, timeout: float, *, prefer_portal: bool = False) -> str:
-        candidates = cls._default_interfaces()
+        candidates = default_interfaces()
         if len(candidates) == 1:
             return candidates[0]
-        scored: list[tuple[int, str]] = []
-        for interface in candidates:
+        def score(interface: str) -> int:
             try:
                 client = cls(interface=interface, timeout=min(timeout, 4.0))
                 try:
@@ -179,18 +58,22 @@ class CampusClient:
                     status = client.probe(attempts=1)
                     campus_confirmed = False
                 if status.state == "portal_detected" and status.portal_host in (PORTAL_HOST, PORTAL_IP):
-                    score = 5 if prefer_portal else 4
+                    return 5 if prefer_portal else 4
                 elif status.state == "portal_detected":
-                    score = 2
+                    return 2
                 elif status.state == "internet_ok":
-                    score = (4 if prefer_portal else 5) if campus_confirmed else 1
-                else:
-                    score = 0
-                scored.append((score, interface))
+                    return (4 if prefer_portal else 5) if campus_confirmed else 1
+                return 0
             except (NetworkError, PortalError):
-                scored.append((0, interface))
+                return 0
+
+        with ThreadPoolExecutor(max_workers=min(3, len(candidates))) as pool:
+            scores = list(pool.map(score, candidates))
+        scored = list(zip(scores, candidates))
         best = max(score for score, _interface in scored)
         winners = [interface for score, interface in scored if score == best]
+        # Candidates already follow route preference, so the first high-confidence
+        # winner is deterministic. Weak evidence must still be unambiguous.
         if best >= 4:
             return winners[0]
         if best > 0 and len(winners) == 1:
@@ -200,122 +83,46 @@ class CampusClient:
     @classmethod
     def online_campus_interface(cls, timeout: float = 10.0) -> str | None:
         """Return the first route-preferred interface with a confirmed online NJUPT session."""
-        interfaces = cls.online_campus_interfaces(timeout=timeout)
-        return interfaces[0] if interfaces else None
+        interfaces, results = cls._online_campus_results(timeout)
+        return next((interface for interface, online in zip(interfaces, results) if online), None)
 
     @classmethod
     def online_campus_interfaces(cls, timeout: float = 10.0) -> list[str]:
         """Return every default-route interface with a confirmed online NJUPT session."""
-        online: list[str] = []
-        for interface in cls._default_interfaces():
+        interfaces, results = cls._online_campus_results(timeout)
+        return [interface for interface, online in zip(interfaces, results) if online]
+
+    @classmethod
+    def _online_campus_results(cls, timeout: float) -> tuple[list[str], list[bool]]:
+        """Probe interfaces concurrently while preserving route order in returned results."""
+        interfaces = default_interfaces()
+
+        def is_online(interface: str) -> bool:
             try:
                 client = cls(interface=interface, timeout=min(timeout, 4.0))
-                if client.campus_status(attempts=1).state != "internet_ok":
-                    continue
+                return client.campus_status(attempts=1).state == "internet_ok"
             except (NetworkError, PortalError):
-                continue
-            online.append(interface)
-        return online
+                return False
 
-    @staticmethod
-    def _interface_ip(interface: str) -> str:
-        if sys.platform == "win32":
-            for item in _windows_network_snapshot():
-                if item["name"] == interface:
-                    try:
-                        return str(ipaddress.IPv4Address(item["address"]))
-                    except ValueError as exc:
-                        raise NetworkError("campus interface has no valid IPv4 address") from exc
-            raise NetworkError("campus interface has no IPv4 address")
-        try:
-            result = subprocess.run(
-                ["ip", "-4", "-o", "addr", "show", "dev", interface],
-                check=True, capture_output=True, text=True, timeout=5,
-            )
-        except (OSError, subprocess.SubprocessError) as exc:
-            raise NetworkError("cannot inspect the campus interface") from exc
-        match = re.search(r"\binet (\d+\.\d+\.\d+\.\d+)/", result.stdout)
-        if not match:
-            raise NetworkError("campus interface has no IPv4 address")
-        return str(ipaddress.IPv4Address(match.group(1)))
+        with ThreadPoolExecutor(max_workers=min(3, len(interfaces))) as pool:
+            results = list(pool.map(is_online, interfaces))
+        return interfaces, results
 
     def _require_route(self, destination: str) -> None:
-        if sys.platform == "win32":
-            if self.interface not in self._default_interfaces():
-                raise NetworkError("default internet route does not use the campus interface")
-            return
-        try:
-            result = subprocess.run(
-                ["ip", "-4", "route", "get", destination, "from", self.local_ip, "oif", self.interface],
-                check=True, capture_output=True, text=True, timeout=5,
-            )
-        except (OSError, subprocess.SubprocessError) as exc:
-            raise NetworkError("cannot inspect the campus route") from exc
-        match = re.search(r"\bdev (\S+)", result.stdout)
-        if not match or match.group(1) != self.interface:
-            raise NetworkError("default internet route does not use the campus interface")
-
-    @staticmethod
-    def _valid_interface_name(interface: str) -> bool:
-        return bool(interface and len(interface) <= 256 and not any(ord(char) < 32 for char in interface))
+        require_route(self.interface, self.local_ip, destination)
 
     def _request(self, host: str, port: int, path: str, *, secure: bool = True) -> Response:
-        try:
-            cls = http.client.HTTPSConnection if secure else http.client.HTTPConnection
-            options: dict[str, object] = {"timeout": self.timeout}
-            if secure:
-                options["context"] = ssl.create_default_context()
-            connection = cls(host, port, **options)
-            connection._create_connection = self._open_socket
-            try:
-                connection.request("GET", path, headers={
-                    "Accept": "*/*",
-                    "Referer": f"https://{PORTAL_HOST}/a79.htm",
-                    "User-Agent": USER_AGENT,
-                })
-                response = connection.getresponse()
-                body = response.read(MAX_RESPONSE + 1)
-                if len(body) > MAX_RESPONSE:
-                    raise PortalError("portal response exceeds the size limit")
-                return Response(
-                    status=response.status,
-                    content_type=response.getheader("Content-Type", ""),
-                    location=response.getheader("Location", ""),
-                    body=body,
-                )
-            finally:
-                connection.close()
-        except (OSError, TimeoutError, ssl.SSLError, http.client.HTTPException) as exc:
-            # Exception messages can include a URL containing credentials.
-            raise NetworkError(f"request failed ({type(exc).__name__})") from None
-
-    def _open_socket(
-        self,
-        address: tuple[str, int],
-        timeout: object = None,
-        source_address: tuple[str, int] | None = None,
-    ) -> socket.socket:
-        del timeout, source_address
-        last_error: OSError | None = None
-        for family, socktype, protocol, _canonname, sockaddr in socket.getaddrinfo(
-            address[0], address[1], socket.AF_INET, socket.SOCK_STREAM
-        ):
-            connection = socket.socket(family, socktype, protocol)
-            try:
-                connection.settimeout(self.timeout)
-                if hasattr(socket, "SO_BINDTODEVICE"):
-                    connection.setsockopt(
-                        socket.SOL_SOCKET, socket.SO_BINDTODEVICE, self.interface.encode() + b"\0"
-                    )
-                connection.bind((self.local_ip, 0))
-                connection.connect(sockaddr)
-                return connection
-            except OSError as exc:
-                last_error = exc
-                connection.close()
-        if last_error is not None:
-            raise last_error
-        raise OSError("no IPv4 address found for destination")
+        return self._transport.request(
+            host,
+            port,
+            path,
+            secure=secure,
+            headers={
+                "Accept": "*/*",
+                "Referer": f"https://{PORTAL_HOST}/a79.htm",
+                "User-Agent": USER_AGENT,
+            },
+        )
 
     def probe(self, attempts: int = 2) -> NetworkStatus:
         if not 1 <= attempts <= 3:
@@ -354,22 +161,19 @@ class CampusClient:
             return NetworkStatus("internet_ok", 200)
         return NetworkStatus("unexpected_response", response.status)
 
-    def _status_with_session(self, connectivity: NetworkStatus, session: str) -> NetworkStatus:
-        if connectivity.state == "internet_ok":
-            external = self._external_access_status()
-            if external.state == "internet_ok":
-                return external
-            if session == "offline":
-                return NetworkStatus("portal_detected", connectivity.http_status, PORTAL_HOST)
-            return external
-        if session == "offline":
-            return NetworkStatus("portal_detected", connectivity.http_status, PORTAL_HOST)
-        return connectivity
+    def _internet_access_status(self, attempts: int = 2) -> NetworkStatus:
+        """Check direct Internet access without interpreting the portal session marker."""
+        connectivity = self.probe(attempts=attempts)
+        if connectivity.state != "internet_ok":
+            return connectivity
+        return self._external_access_status()
 
     def campus_status(self, attempts: int = 2) -> NetworkStatus:
         """Confirm the NJUPT endpoint plus domestic 204 and ordinary HTTPS access."""
         connectivity = self.probe(attempts=attempts)
-        return self._status_with_session(connectivity, self._session_state())
+        return status_with_session(
+            connectivity, self._session_state(), self._external_access_status, portal_host=PORTAL_HOST
+        )
 
     def authentication_status(self, attempts: int = 2) -> NetworkStatus:
         """Return campus status, falling back to connectivity on non-NJUPT networks."""
@@ -378,10 +182,13 @@ class CampusClient:
             session = self._session_state()
         except (NetworkError, PortalError):
             return connectivity
-        return self._status_with_session(connectivity, session)
+        return status_with_session(
+            connectivity, session, self._external_access_status, portal_host=PORTAL_HOST
+        )
 
     @staticmethod
     def _parse_jsonp(body: bytes, callback: str) -> dict[str, object]:
+        """Parse only the callback generated for this request, never executable prefixes."""
         text = body.decode("utf-8", errors="strict").strip()
         match = re.fullmatch(r"([A-Za-z_$][\w$]*)\((.*)\);?", text, re.S)
         if not match or match.group(1) != callback:
@@ -424,6 +231,8 @@ class CampusClient:
             "login_method": "1", "en_md5": "0", "enable_slide_verify": "0",
             "enable_login_verify": "0", "account_prefix": "1", "en_perceive": "0",
         }
+        # These values describe the only protocol variant observed and tested.
+        # Refuse a changed portal instead of sending a secret with unknown semantics.
         if any(str(data.get(key)) != value for key, value in expected.items()):
             raise PortalError("portal authentication settings changed")
         if str(data.get("no_filter_accandpwd")) not in ("0", "1"):
@@ -457,8 +266,10 @@ class CampusClient:
             ("page_index", str(config["page_index"])),
         ]
 
-    def login(self, credentials: Credentials) -> str:
-        initial = self.authentication_status()
+    def login(
+        self, credentials: Credentials, *, initial_status: NetworkStatus | None = None
+    ) -> str:
+        initial = initial_status or self.authentication_status()
         if initial.state == "internet_ok":
             return "already_online"
         if initial.state != "portal_detected":
@@ -482,7 +293,9 @@ class CampusClient:
         for delay in (0, 2, 4):
             if delay:
                 time.sleep(delay)
-            if self.authentication_status(attempts=1).state == "internet_ok":
+            # A successful login response is the missing context that makes direct
+            # connectivity useful even when chkstatus remains stale at "offline".
+            if self._internet_access_status(attempts=1).state == "internet_ok":
                 return "login_success"
         raise AuthenticationError("portal accepted login, but internet check still fails")
 

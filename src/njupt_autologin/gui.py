@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import json
-import queue
 import sys
-import threading
 import tkinter as tk
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -83,9 +81,10 @@ class App:
         self.icon_image: tk.PhotoImage | None = None
         self.header_icon: tk.PhotoImage | None = None
         self.current_connection_interface: str | None = None
-        self._busy_scope = "connection"
         self._animation_job: str | None = None
         self._credentials_visible = False
+        self._closing = False
+        self._executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="njupt-gui")
         self._has_credentials = self._load_existing()
         self.interface_values = ("auto",)
 
@@ -96,6 +95,7 @@ class App:
         self._set_credentials_visible(not self._has_credentials, animate=False)
         root.update_idletasks()
         self._center_window()
+        root.protocol("WM_DELETE_WINDOW", self._close)
         self.refresh_all()
 
     def _configure_style(self) -> None:
@@ -159,6 +159,12 @@ class App:
         self.main.grid(row=0, column=0, sticky="nsew")
         self.main.columnconfigure(0, weight=1, minsize=508)
 
+        self._build_header()
+        self._build_credentials_card()
+        self._build_connection_card()
+        self._build_service_card()
+
+    def _build_header(self) -> None:
         header = ttk.Frame(self.main, style="App.TFrame")
         header.grid(row=0, column=0, sticky="ew", pady=(0, 10))
         try:
@@ -178,6 +184,7 @@ class App:
             font=(self.font_family, 9),
         ).grid(row=1, column=1, sticky="nw")
 
+    def _build_credentials_card(self) -> None:
         self.credentials_shell = tk.Frame(self.main, background=BG, height=1)
         self.credentials_shell.grid(row=1, column=0, sticky="ew")
         self.credentials_shell.grid_propagate(False)
@@ -206,6 +213,7 @@ class App:
         install_button.grid(row=6, column=1, sticky="ew", padx=(5, 0))
         self.buttons.extend((save_button, install_button))
 
+    def _build_connection_card(self) -> None:
         connection = self._card(self.main)
         connection.master.grid(row=2, column=0, sticky="ew", pady=(0, 8))
         connection.columnconfigure(0, weight=1)
@@ -283,6 +291,7 @@ class App:
         logout_button.grid(row=0, column=1, sticky="ew", padx=(5, 0))
         self.buttons.extend((login_button, logout_button))
 
+    def _build_service_card(self) -> None:
         status = self._card(self.main)
         status.master.grid(row=3, column=0, sticky="ew")
         for column in range(3):
@@ -444,7 +453,6 @@ class App:
             progress.stop()
             progress.place_forget()
         if busy:
-            self._busy_scope = scope
             progress = self.connection_progress if scope == "connection" else self.service_progress
             progress.place(x=0, y=7, relwidth=1, height=3)
             progress.start(12)
@@ -484,27 +492,33 @@ class App:
         self, action: Callable[[], object], on_success: Callable[[object], None],
         on_error: Callable[[str], None],
     ) -> None:
-        results: queue.Queue[tuple[bool, object]] = queue.Queue(maxsize=1)
+        self._background_many(
+            (action,), lambda values: on_success(values[0]), on_error,
+        )
 
-        def worker() -> None:
-            try:
-                result = action()
-            except EXPECTED_ERRORS as exc:
-                results.put((False, str(exc)))
-            except Exception as exc:  # Keep a failed backend from leaving the GUI permanently busy.
-                results.put((False, f"{type(exc).__name__}: {exc}"))
-            else:
-                results.put((True, result))
+    def _background_many(
+        self, actions: tuple[Callable[[], object], ...],
+        on_success: Callable[[tuple[object, ...]], None],
+        on_error: Callable[[str], None],
+    ) -> None:
+        """Share a bounded worker pool while keeping every Tk call on the main thread."""
+        futures = tuple(self._executor.submit(action) for action in actions)
 
         def poll() -> None:
-            try:
-                succeeded, value = results.get_nowait()
-            except queue.Empty:
+            if self._closing:
+                return
+            if not all(future.done() for future in futures):
                 self.root.after(50, poll)
                 return
-            on_success(value) if succeeded else on_error(str(value))
+            try:
+                values = tuple(future.result() for future in futures)
+            except EXPECTED_ERRORS as exc:
+                on_error(str(exc))
+            except Exception as exc:  # Keep a failed backend from leaving the GUI permanently busy.
+                on_error(f"{type(exc).__name__}: {exc}")
+            else:
+                on_success(values)
 
-        threading.Thread(target=worker, daemon=True).start()
         self.root.after(50, poll)
 
     def _finish_error(self, message: str, *, scope: str) -> None:
@@ -610,14 +624,8 @@ class App:
             except EXPECTED_ERRORS as exc:
                 return str(exc)
 
-        def action() -> tuple[ConnectionSnapshot | str, ServiceStatus | str]:
-            with ThreadPoolExecutor(max_workers=2) as pool:
-                connection = pool.submit(read_connection)
-                service = pool.submit(read_service)
-                return connection.result(), service.result()
-
-        self._background(
-            action,
+        self._background_many(
+            (read_connection, read_service),
             lambda value: self._all_status_loaded(value, keep_message=keep_message),
             lambda value: self._all_status_error(value, keep_message=keep_message),
         )
@@ -696,6 +704,14 @@ class App:
         width = max(self.root.winfo_width(), self.root.winfo_reqwidth())
         height = self.root.winfo_reqheight()
         self.root.geometry(f"{width}x{height}+{self.root.winfo_x()}+{self.root.winfo_y()}")
+
+    def _close(self) -> None:
+        self._closing = True
+        if self._animation_job is not None:
+            self.root.after_cancel(self._animation_job)
+            self._animation_job = None
+        self._executor.shutdown(wait=False, cancel_futures=True)
+        self.root.destroy()
 
 
 def main() -> int:

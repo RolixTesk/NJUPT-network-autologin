@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import platform
 import re
 import shutil
 import subprocess
@@ -16,6 +17,23 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 PACKAGE = "njupt-autologin"
+
+
+def _architecture(machine: str | None = None) -> str:
+    normalized = (machine or platform.machine()).strip().lower()
+    if normalized in {"amd64", "x86_64"}:
+        return "x64"
+    if normalized in {"arm64", "aarch64"}:
+        return "arm64"
+    raise RuntimeError(f"unsupported Windows architecture: {normalized or 'unknown'}")
+
+
+def _installer_architecture(architecture: str) -> str:
+    if architecture == "x64":
+        return "x64compatible and not arm64"
+    if architecture == "arm64":
+        return "arm64"
+    raise RuntimeError(f"unsupported installer architecture: {architecture}")
 
 
 def _version() -> str:
@@ -69,13 +87,16 @@ def _find_iscc() -> Path | None:
     return next((path for path in candidates if path.is_file()), None)
 
 
-def _build_installer(bin_dir: Path, output_dir: Path, version: str, work: Path) -> Path | None:
+def _build_installer(
+    bin_dir: Path, output_dir: Path, version: str, architecture: str, work: Path,
+) -> Path | None:
     iscc = _find_iscc()
     if iscc is None:
         return None
     script = work / "installer.iss"
     source = str(bin_dir).replace('"', '""')
     output = str(output_dir).replace('"', '""')
+    installer_architecture = _installer_architecture(architecture)
     script.write_text(
         f"""[Setup]
 AppId=A43C6791-F359-4CD8-9C82-224C69D4B9B4
@@ -85,10 +106,10 @@ AppPublisher=RolixTesk
 DefaultDirName={{localappdata}}\\Programs\\NJUPT Auto Login
 DefaultGroupName=NJUPT Auto Login
 PrivilegesRequired=lowest
-ArchitecturesAllowed=x64compatible
-ArchitecturesInstallIn64BitMode=x64compatible
+ArchitecturesAllowed={installer_architecture}
+ArchitecturesInstallIn64BitMode={installer_architecture}
 OutputDir={output}
-OutputBaseFilename=njupt-autologin-windows-{version}-x64-setup
+OutputBaseFilename=njupt-autologin-windows-{version}-{architecture}-setup
 SetupIconFile={source}\\app-icon.ico
 UninstallDisplayIcon={{app}}\\njupt-autologin-gui.exe
 Compression=lzma2
@@ -236,12 +257,18 @@ end;
         encoding="utf-8-sig",
     )
     subprocess.run([str(iscc), str(script)], check=True)
-    return output_dir / f"njupt-autologin-windows-{version}-x64-setup.exe"
+    return output_dir / f"njupt-autologin-windows-{version}-{architecture}-setup.exe"
 
 
-def build(output_dir: Path) -> tuple[Path, Path | None]:
+def build(output_dir: Path, expected_architecture: str | None = None) -> tuple[Path, Path | None]:
     if sys.platform != "win32":
         raise RuntimeError("Windows packages must be built on Windows")
+    architecture = _architecture()
+    if expected_architecture is not None and architecture != expected_architecture:
+        raise RuntimeError(
+            f"build runner is {architecture}, expected {expected_architecture}; "
+            "cross-architecture PyInstaller output is not supported"
+        )
     version = _version()
     output_dir.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="njupt-win-build-") as temporary:
@@ -269,20 +296,21 @@ def build(output_dir: Path) -> tuple[Path, Path | None]:
             "不需要另行安装 Python。\n",
             encoding="utf-8-sig",
         )
-        archive = output_dir / f"{PACKAGE}-windows-{version}-x64-portable.zip"
+        archive = output_dir / f"{PACKAGE}-windows-{version}-{architecture}-portable.zip"
         archive.unlink(missing_ok=True)
         with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as bundle:
             for path in sorted(binaries.iterdir()):
                 bundle.write(path, f"{PACKAGE}-{version}/{path.name}")
-        installer = _build_installer(binaries, output_dir, version, work)
+        installer = _build_installer(binaries, output_dir, version, architecture, work)
     return archive, installer
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output-dir", type=Path, default=ROOT / "dist")
+    parser.add_argument("--architecture", choices=("x64", "arm64"))
     args = parser.parse_args()
-    archive, installer = build(args.output_dir.resolve())
+    archive, installer = build(args.output_dir.resolve(), args.architecture)
     print(archive)
     if installer is not None:
         print(installer)

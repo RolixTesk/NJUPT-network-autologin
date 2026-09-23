@@ -17,7 +17,7 @@ class WindowsServiceTests(unittest.TestCase):
         self.assertTrue(status.installed)
         self.assertTrue(status.enabled)
         self.assertFalse(status.active)
-        self.assertTrue(status.linger)
+        self.assertTrue(status.startup_ready)
 
     def test_pause_marker_blocks_only_the_current_boot(self):
         adapter = WindowsServiceAdapter()

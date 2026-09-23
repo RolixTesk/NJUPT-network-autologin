@@ -1,4 +1,4 @@
-"""Install a user timer that periodically checks and logs in when needed."""
+"""Install a user timer that checks and logs in once after user-manager startup."""
 
 from __future__ import annotations
 
@@ -102,6 +102,8 @@ def install_service(interface: str = "auto", credential_path: Path | None = None
     package_source = Path(__file__).resolve().parent
     package_target = app_root / "njupt_autologin"
     app_root.mkdir(parents=True, exist_ok=True)
+    # Snapshot the application beside the generated units so a later source-tree
+    # move or virtual-environment removal cannot break the startup command.
     shutil.copytree(
         package_source, package_target, dirs_exist_ok=True,
         ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
